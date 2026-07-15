@@ -1,4 +1,12 @@
 import { App, Plugin, Protyle, openTab, showMessage } from "siyuan";
+import {
+  BrowserJsPlumbInstance,
+  Connection,
+  EVENT_CONNECTION,
+  EVENT_CONNECTION_DETACHED,
+  INTERCEPT_BEFORE_DROP,
+  newInstance,
+} from "@jsplumb/browser-ui";
 import "./index.css";
 
 type NodeKind = "document" | "block" | "text";
@@ -40,6 +48,13 @@ interface Point {
   y: number;
 }
 
+interface ReferenceResult {
+  id: string;
+  type: "document" | "block";
+  content: string;
+  hpath?: string;
+}
+
 type Interaction =
   | { type: "pan"; startX: number; startY: number }
   | { type: "move"; nodeId: string; startX: number; startY: number; originX: number; originY: number }
@@ -47,7 +62,7 @@ type Interaction =
 
 const STORAGE_ROOT = "/data/storage/petal/siyuan-canvas";
 const SIYUAN_ID = /^[0-9]{14}-[a-z0-9]{7}$/;
-const SVG_NS = "http://www.w3.org/2000/svg";
+const SIYUAN_ID_GLOBAL = /[0-9]{14}-[a-z0-9]{7}/g;
 
 const newId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -148,35 +163,42 @@ async function getReferenceTitle(node: CanvasNode): Promise<string> {
   return rows[0]?.content || (node.type === "document" ? "Dokument" : "Block");
 }
 
-async function findReference(input: string) {
+async function searchReferences(input: string): Promise<ReferenceResult[]> {
   const query = input.trim();
-  const statement = SIYUAN_ID.test(query)
+  const statement = !query
+    ? `SELECT id, type, content, hpath FROM blocks WHERE type = 'd' ORDER BY updated DESC LIMIT 20`
+    : SIYUAN_ID.test(query)
     ? `SELECT id, type, content FROM blocks WHERE id = '${query}' LIMIT 1`
-    : `SELECT id, type, content FROM blocks WHERE content LIKE '%${query.replace(/'/g, "''")}%' ORDER BY updated DESC LIMIT 8`;
-  const rows = await kernel<Array<{ id: string; type: string; content?: string }>>(
+    : `SELECT id, type, content, hpath FROM blocks WHERE content LIKE '%${query.replace(/'/g, "''")}%' ORDER BY CASE WHEN type = 'd' THEN 0 ELSE 1 END, updated DESC LIMIT 24`;
+  const rows = await kernel<Array<{ id: string; type: string; content?: string; hpath?: string }>>(
     "/api/query/sql",
     { stmt: statement },
   );
-  if (!rows.length) return null;
-  const chosen =
-    rows.length === 1
-      ? rows[0]
-      : rows[
-          (Number(
-            prompt(
-              `Treffer:\n${rows
-                .map((row, index) => `${index + 1}: ${row.content || row.id}`)
-                .join("\n")}\n\nNummer wählen:`,
-              "1",
-            ),
-          ) || 0) - 1
-        ];
-  return chosen
-    ? {
-        id: chosen.id,
-        type: chosen.type === "d" ? ("document" as const) : ("block" as const),
-      }
-    : null;
+  return rows.map((row) => ({
+    id: row.id,
+    type: row.type === "d" ? "document" : "block",
+    content: row.content || row.id,
+    hpath: row.hpath,
+  }));
+}
+
+function droppedSiYuanIds(transfer: DataTransfer | null): string[] {
+  if (!transfer) return [];
+  const values = new Set<string>();
+  const candidates = [transfer.getData("application/siyuan-file")];
+  for (const type of Array.from(transfer.types)) {
+    candidates.push(type);
+    try {
+      candidates.push(transfer.getData(type));
+    } catch {
+      // Some browsers expose a type but disallow reading its data.
+    }
+  }
+  candidates.push(transfer.getData("text/plain"), transfer.getData("text/html"));
+  for (const candidate of candidates) {
+    for (const id of candidate.match(SIYUAN_ID_GLOBAL) || []) values.add(id);
+  }
+  return [...values];
 }
 
 class CanvasView {
@@ -186,11 +208,14 @@ class CanvasView {
   private selectedNode?: string;
   private selectedEdge?: string;
   private linkMode = false;
-  private linkSource?: string;
   private interaction?: Interaction;
   private saveTimer?: number;
+  private searchTimer?: number;
+  private searchIndex = 0;
   private protyles = new Map<string, Protyle>();
-  private markerId: string;
+  private plumbing?: BrowserJsPlumbInstance;
+  private connections = new Map<string, Connection>();
+  private syncingConnections = false;
 
   constructor(
     private app: App,
@@ -199,7 +224,6 @@ class CanvasView {
     private store: GraphStore,
   ) {
     this.graph = emptyGraph(canvasId);
-    this.markerId = `syc-arrow-${canvasId.replace(/[^a-zA-Z0-9-]/g, "")}`;
   }
 
   async init() {
@@ -209,6 +233,7 @@ class CanvasView {
     } catch (error) {
       showMessage(`Canvas-Speicher nicht erreichbar: ${String(error)}`);
     }
+    this.setupConnections();
     this.bindGlobalEvents();
     await this.renderNodes();
     this.updateTransform();
@@ -234,13 +259,6 @@ class CanvasView {
         </div>
       </div>
       <div class="syc-viewport">
-        <svg class="syc-edges" aria-hidden="true">
-          <defs>
-            <marker id="${this.markerId}" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-              <path d="M0,0 L0,6 L9,3 z"></path>
-            </marker>
-          </defs>
-        </svg>
         <div class="syc-world"></div>
         <div class="syc-empty">
           <div class="syc-empty__icon">◇</div>
@@ -248,7 +266,56 @@ class CanvasView {
           <span>Füge eine SiYuan-Seite, einen Block oder eine Textkarte hinzu.</span>
           <div><button class="syc-button syc-button--primary" data-action="reference">＋ Referenz</button><button class="syc-button" data-action="text">＋ Text</button></div>
         </div>
+      </div>
+      <div class="syc-dialog-backdrop is-hidden" data-role="search-dialog">
+        <section class="syc-dialog" role="dialog" aria-modal="true" aria-label="SiYuan-Referenz hinzufügen">
+          <header class="syc-dialog__header"><strong>Referenz hinzufügen</strong><button class="syc-dialog__close" data-action="close-search" title="Schließen">×</button></header>
+          <input class="syc-search" data-role="search-input" type="search" placeholder="Dokument oder Block suchen …" autocomplete="off">
+          <div class="syc-search-results" data-role="search-results"></div>
+          <footer class="syc-dialog__footer">↑↓ auswählen · Enter hinzufügen · Esc schließen</footer>
+        </section>
+      </div>
+      <div class="syc-dialog-backdrop is-hidden" data-role="edge-dialog">
+        <form class="syc-dialog syc-dialog--small" data-role="edge-form">
+          <header class="syc-dialog__header"><strong>Pfeil beschriften</strong><button type="button" class="syc-dialog__close" data-action="close-edge">×</button></header>
+          <input class="syc-search" data-role="edge-label" maxlength="80" placeholder="Beschriftung (optional)">
+          <div class="syc-dialog__actions"><button type="button" class="syc-button" data-action="close-edge">Abbrechen</button><button class="syc-button syc-button--primary" type="submit">Übernehmen</button></div>
+        </form>
       </div>`;
+  }
+
+  private setupConnections() {
+    this.plumbing = newInstance({
+      container: this.world(),
+      elementsDraggable: false,
+      connector: { type: "Bezier", options: { curviness: 72 } },
+      paintStyle: { stroke: "var(--b3-theme-primary)", strokeWidth: 2 },
+      hoverPaintStyle: { stroke: "var(--b3-theme-primary)", strokeWidth: 3 },
+      endpoint: { type: "Dot", options: { radius: 4 } },
+      endpointStyle: { fill: "var(--b3-theme-primary)" },
+      connectionOverlays: [{ type: "Arrow", options: { location: 1, width: 11, length: 11 } }],
+      connectionsDetachable: true,
+    });
+    this.plumbing.addSourceSelector(".syc-port", {
+      anchor: "Continuous",
+      maxConnections: -1,
+      uniqueEndpoint: true,
+    });
+    this.plumbing.addTargetSelector(".syc-card__body", {
+      anchor: "Continuous",
+      maxConnections: -1,
+    });
+    this.plumbing.bind(INTERCEPT_BEFORE_DROP, (info: any) => info.sourceId !== info.targetId);
+    this.plumbing.bind(EVENT_CONNECTION, (info: any) => this.onConnectionCreated(info));
+    this.plumbing.bind(EVENT_CONNECTION_DETACHED, (info: any) => this.onConnectionDetached(info.connection));
+    this.plumbing.bind("click", (connection: Connection) => {
+      const edgeId = connection.getParameter("edgeId") as string;
+      if (edgeId) this.selectEdge(edgeId);
+    });
+    this.plumbing.bind("dblclick", (connection: Connection) => {
+      const edgeId = connection.getParameter("edgeId") as string;
+      if (edgeId) this.openEdgeDialog(edgeId);
+    });
   }
 
   private bindGlobalEvents() {
@@ -271,7 +338,7 @@ class CanvasView {
     );
 
     viewport.addEventListener("pointerdown", (event) => {
-      if (event.target === viewport || event.target === this.world() || event.target === this.svg()) {
+      if (event.target === viewport || event.target === this.world()) {
         this.clearSelection();
         this.interaction = {
           type: "pan",
@@ -294,34 +361,61 @@ class CanvasView {
     viewport.addEventListener("dragover", (event) => event.preventDefault());
     viewport.addEventListener("drop", (event) => {
       event.preventDefault();
-      const value = event.dataTransfer?.getData("text/plain") || "";
-      const id = value.match(/[0-9]{14}-[a-z0-9]{7}/)?.[0];
-      if (!id) {
-        showMessage("Der Drop enthält keine SiYuan-Block-ID.");
+      const ids = droppedSiYuanIds(event.dataTransfer);
+      if (!ids.length) {
+        showMessage("Der Drop enthält keine erkennbare SiYuan-ID.");
         return;
       }
       const rect = viewport.getBoundingClientRect();
-      void this.addReference(id, this.toWorld(event.clientX - rect.left, event.clientY - rect.top));
+      const origin = this.toWorld(event.clientX - rect.left, event.clientY - rect.top);
+      void Promise.all(ids.map((id, index) => this.addReferenceById(id, {
+        x: origin.x + index * 32,
+        y: origin.y + index * 32,
+      })));
     });
 
     this.element.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") this.cancelLinkMode();
-      if ((event.key === "Delete" || event.key === "Backspace") && !(event.target instanceof HTMLTextAreaElement)) {
+      if (event.key === "Escape") {
+        this.closeSearch();
+        this.closeEdgeDialog();
+        this.cancelLinkMode();
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && !(event.target instanceof HTMLTextAreaElement) && !(event.target instanceof HTMLInputElement)) {
         void this.handleAction("delete");
       }
     });
-
-    new ResizeObserver(() => this.renderEdges()).observe(viewport);
+    const input = this.element.querySelector<HTMLInputElement>("[data-role='search-input']")!;
+    input.addEventListener("input", () => {
+      window.clearTimeout(this.searchTimer);
+      this.searchTimer = window.setTimeout(() => void this.renderSearchResults(input.value), 180);
+    });
+    input.addEventListener("keydown", (event) => this.onSearchKeydown(event));
+    this.element.querySelector<HTMLFormElement>("[data-role='edge-form']")!.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.saveEdgeLabel();
+    });
+    this.element.querySelectorAll<HTMLElement>(".syc-dialog-backdrop").forEach((backdrop) => {
+      backdrop.addEventListener("pointerdown", (event) => {
+        if (event.target === backdrop) {
+          this.closeSearch();
+          this.closeEdgeDialog();
+        }
+      });
+    });
+    new ResizeObserver(() => this.plumbing?.repaintEverything()).observe(viewport);
   }
 
   private async handleAction(action: string) {
     if (action === "reference") {
-      const query = prompt("Dokument-/Block-ID oder Suchtext:");
-      if (query) await this.addReference(query);
+      this.openSearch();
     } else if (action === "text") {
       this.addTextNode();
     } else if (action === "link") {
       this.toggleLinkMode();
+    } else if (action === "close-search") {
+      this.closeSearch();
+    } else if (action === "close-edge") {
+      this.closeEdgeDialog();
     } else if (action === "delete") {
       this.deleteSelection();
     } else if (action === "save") {
@@ -357,16 +451,105 @@ class CanvasView {
       this.positionCard(node);
       (this.protyles.get(node.id) as any)?.resize?.();
     }
-    this.renderEdges();
+    if (this.interaction.type !== "pan") this.plumbing?.revalidate(this.card(node.id)!);
   }
 
-  private async addReference(value: string, position = this.nextPosition()) {
+  private openSearch() {
+    const dialog = this.element.querySelector<HTMLElement>("[data-role='search-dialog']")!;
+    const input = this.element.querySelector<HTMLInputElement>("[data-role='search-input']")!;
+    dialog.classList.remove("is-hidden");
+    input.value = "";
+    this.searchIndex = 0;
+    void this.renderSearchResults("");
+    window.setTimeout(() => input.focus(), 0);
+  }
+
+  private closeSearch() {
+    this.element.querySelector("[data-role='search-dialog']")?.classList.add("is-hidden");
+  }
+
+  private async renderSearchResults(query: string) {
+    const container = this.element.querySelector<HTMLElement>("[data-role='search-results']")!;
+    container.innerHTML = `<div class="syc-search-state">Suche …</div>`;
     try {
-      const match = await findReference(value);
+      const results = await searchReferences(query);
+      if (this.element.querySelector<HTMLInputElement>("[data-role='search-input']")!.value !== query) return;
+      container.innerHTML = "";
+      this.searchIndex = Math.min(this.searchIndex, Math.max(0, results.length - 1));
+      if (!results.length) {
+        container.innerHTML = `<div class="syc-search-state">Keine Dokumente oder Blöcke gefunden.</div>`;
+        return;
+      }
+      results.forEach((result, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "syc-search-result";
+        button.dataset.index = String(index);
+        button.classList.toggle("is-active", index === this.searchIndex);
+        const icon = document.createElement("span");
+        icon.className = "syc-search-result__icon";
+        icon.textContent = result.type === "document" ? "▤" : "▦";
+        const text = document.createElement("span");
+        const title = document.createElement("strong");
+        title.textContent = result.content;
+        const meta = document.createElement("small");
+        meta.textContent = result.hpath || `${result.type === "document" ? "Dokument" : "Block"} · ${result.id}`;
+        text.append(title, meta);
+        button.append(icon, text);
+        button.addEventListener("pointermove", () => {
+          this.searchIndex = index;
+          this.refreshSearchSelection();
+        });
+        button.addEventListener("click", () => void this.chooseSearchResult(result));
+        container.append(button);
+      });
+    } catch (error) {
+      container.innerHTML = `<div class="syc-search-state">Suche fehlgeschlagen.</div>`;
+      console.error(error);
+    }
+  }
+
+  private onSearchKeydown(event: KeyboardEvent) {
+    const results = [...this.element.querySelectorAll<HTMLElement>(".syc-search-result")];
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!results.length) return;
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      this.searchIndex = (this.searchIndex + direction + results.length) % results.length;
+      this.refreshSearchSelection();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      results[this.searchIndex]?.click();
+    }
+  }
+
+  private refreshSearchSelection() {
+    this.element.querySelectorAll<HTMLElement>(".syc-search-result").forEach((item, index) => {
+      item.classList.toggle("is-active", index === this.searchIndex);
+      if (index === this.searchIndex) item.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  private async chooseSearchResult(result: ReferenceResult) {
+    this.closeSearch();
+    await this.addResolvedReference(result);
+  }
+
+  private async addReferenceById(id: string, position = this.nextPosition()) {
+    try {
+      const match = (await searchReferences(id))[0];
       if (!match) {
         showMessage("Keine passende SiYuan-Referenz gefunden.");
         return;
       }
+      await this.addResolvedReference(match, position);
+    } catch (error) {
+      showMessage(String(error));
+    }
+  }
+
+  private async addResolvedReference(match: ReferenceResult, position = this.nextPosition()) {
+    try {
       const node: CanvasNode = {
         id: newId("node"),
         type: match.type,
@@ -408,14 +591,19 @@ class CanvasView {
 
   private async renderNodes() {
     this.destroyEditors();
+    this.syncingConnections = true;
+    this.plumbing?.deleteEveryConnection();
+    this.connections.clear();
     this.world().innerHTML = "";
     await Promise.all(this.graph.nodes.map((node) => this.appendCard(node)));
-    this.renderEdges();
+    this.syncingConnections = false;
+    this.renderConnections();
   }
 
   private async appendCard(node: CanvasNode) {
     const card = document.createElement("article");
     card.className = `syc-card syc-card--${node.type}`;
+    card.id = node.id;
     card.dataset.nodeId = node.id;
     card.innerHTML = `
       <header class="syc-card__header">
@@ -432,6 +620,7 @@ class CanvasView {
       <div class="syc-resize" title="Kartengröße ändern"></div>`;
     this.world().append(card);
     this.positionCard(node);
+    this.plumbing?.manage(card);
 
     const title = card.querySelector<HTMLElement>(".syc-card__title")!;
     const body = card.querySelector<HTMLElement>(".syc-card__body")!;
@@ -469,13 +658,7 @@ class CanvasView {
 
     card.addEventListener("click", (event) => {
       if ((event.target as HTMLElement).closest(".syc-card__menu")) return;
-      if (this.linkMode) {
-        event.preventDefault();
-        event.stopPropagation();
-        this.chooseLinkNode(node.id);
-      } else {
-        this.selectNode(node.id);
-      }
+      this.selectNode(node.id);
     });
 
     card.querySelector<HTMLElement>(".syc-card__header")!.addEventListener("pointerdown", (event) => {
@@ -516,12 +699,7 @@ class CanvasView {
     });
 
     card.querySelectorAll<HTMLElement>(".syc-port").forEach((port) => {
-      port.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!this.linkMode) this.startLinkMode();
-        this.chooseLinkNode(node.id);
-      });
+      port.addEventListener("pointerdown", (event) => event.stopPropagation());
     });
   }
 
@@ -535,23 +713,23 @@ class CanvasView {
     this.selectedEdge = id;
     this.selectedNode = undefined;
     this.refreshSelection();
-    this.renderEdges();
+    this.refreshConnections();
   }
 
   private clearSelection() {
     this.selectedNode = undefined;
     this.selectedEdge = undefined;
     this.refreshSelection();
-    this.renderEdges();
+    this.refreshConnections();
   }
 
   private refreshSelection() {
     this.element.querySelectorAll<HTMLElement>(".syc-card").forEach((card) => {
       card.classList.toggle("is-selected", card.dataset.nodeId === this.selectedNode);
-      card.classList.toggle("is-link-source", card.dataset.nodeId === this.linkSource);
     });
     const deleteButton = this.element.querySelector<HTMLButtonElement>("[data-action='delete']")!;
     deleteButton.disabled = !this.selectedNode && !this.selectedEdge;
+    this.refreshConnections();
   }
 
   private toggleLinkMode() {
@@ -561,48 +739,25 @@ class CanvasView {
 
   private startLinkMode() {
     this.linkMode = true;
-    this.linkSource = undefined;
     this.element.classList.add("is-linking");
     this.element.querySelector("[data-action='link']")?.classList.add("is-active");
-    this.setStatus("Verbindung: Quellkarte wählen", true);
+    this.setStatus("Verbindungspunkt einer Karte auf eine Zielkarte ziehen", true);
     this.refreshSelection();
   }
 
   private cancelLinkMode() {
     this.linkMode = false;
-    this.linkSource = undefined;
     this.element.classList.remove("is-linking");
     this.element.querySelector("[data-action='link']")?.classList.remove("is-active");
     this.setStatus("Bereit");
     this.refreshSelection();
   }
 
-  private chooseLinkNode(id: string) {
-    if (!this.linkSource) {
-      this.linkSource = id;
-      this.setStatus("Verbindung: Zielkarte wählen", true);
-      this.refreshSelection();
-      return;
-    }
-    if (this.linkSource === id) {
-      showMessage("Quelle und Ziel müssen unterschiedliche Karten sein.");
-      return;
-    }
-    this.graph.edges.push({
-      id: newId("edge"),
-      source: this.linkSource,
-      target: id,
-      label: prompt("Pfeiltext (optional):")?.trim() || "",
-      directed: true,
-    });
-    this.cancelLinkMode();
-    this.renderEdges();
-    this.queueSave();
-  }
-
   private deleteSelection() {
     if (this.selectedEdge) {
-      this.graph.edges = this.graph.edges.filter((edge) => edge.id !== this.selectedEdge);
+      const connection = this.connections.get(this.selectedEdge);
+      if (connection) this.plumbing?.deleteConnection(connection);
+      else this.graph.edges = this.graph.edges.filter((edge) => edge.id !== this.selectedEdge);
       this.selectedEdge = undefined;
     } else if (this.selectedNode) {
       const id = this.selectedNode;
@@ -610,100 +765,88 @@ class CanvasView {
       this.protyles.delete(id);
       this.graph.nodes = this.graph.nodes.filter((node) => node.id !== id);
       this.graph.edges = this.graph.edges.filter((edge) => edge.source !== id && edge.target !== id);
-      this.card(id)?.remove();
+      const card = this.card(id);
+      if (card) this.plumbing?.unmanage(card, true);
       this.selectedNode = undefined;
     }
     this.refreshSelection();
-    this.renderEdges();
     this.updateEmptyState();
     this.queueSave();
   }
 
-  private renderEdges() {
-    const svg = this.svg();
-    const viewport = this.viewport();
-    svg.setAttribute("viewBox", `0 0 ${viewport.clientWidth} ${viewport.clientHeight}`);
-    svg.querySelectorAll(".syc-edge").forEach((element) => element.remove());
-    const nodes = new Map(this.graph.nodes.map((node) => [node.id, node]));
-
+  private renderConnections() {
+    if (!this.plumbing) return;
+    this.syncingConnections = true;
     for (const edge of this.graph.edges) {
-      const source = nodes.get(edge.source);
-      const target = nodes.get(edge.target);
+      const source = this.card(edge.source);
+      const target = this.card(edge.target);
       if (!source || !target) continue;
-      const geometry = this.edgeGeometry(source, target);
-      const group = document.createElementNS(SVG_NS, "g");
-      group.classList.add("syc-edge");
-      if (edge.id === this.selectedEdge) group.classList.add("is-selected");
-      group.dataset.edgeId = edge.id;
-
-      const hit = document.createElementNS(SVG_NS, "path");
-      hit.classList.add("syc-edge__hit");
-      hit.setAttribute("d", geometry.path);
-      const line = document.createElementNS(SVG_NS, "path");
-      line.classList.add("syc-edge__line");
-      line.setAttribute("d", geometry.path);
-      line.setAttribute("marker-end", `url(#${this.markerId})`);
-      group.append(hit, line);
-
-      if (edge.label) {
-        const label = document.createElementNS(SVG_NS, "text");
-        label.classList.add("syc-edge__label");
-        label.setAttribute("x", String(geometry.label.x));
-        label.setAttribute("y", String(geometry.label.y));
-        label.textContent = edge.label;
-        group.append(label);
-      }
-
-      group.addEventListener("click", (event) => {
-        event.stopPropagation();
-        this.selectEdge(edge.id);
-      });
-      group.addEventListener("dblclick", (event) => {
-        event.stopPropagation();
-        edge.label = prompt("Pfeiltext:", edge.label || "")?.trim() || "";
-        this.renderEdges();
-        this.queueSave();
-      });
-      svg.append(group);
+      const connection = this.plumbing.connect({ source, target });
+      if (!connection) continue;
+      connection.setParameter("edgeId", edge.id);
+      connection.setLabel(edge.label || "");
+      this.connections.set(edge.id, connection);
     }
+    this.syncingConnections = false;
+    this.refreshConnections();
   }
 
-  private edgeGeometry(source: CanvasNode, target: CanvasNode) {
-    const sourceCenter = { x: source.x + source.width / 2, y: source.y + source.height / 2 };
-    const targetCenter = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
-    const dx = targetCenter.x - sourceCenter.x;
-    const dy = targetCenter.y - sourceCenter.y;
-    let start: Point;
-    let end: Point;
-    let control1: Point;
-    let control2: Point;
+  private onConnectionCreated(info: { connection: Connection; sourceId: string; targetId: string }) {
+    if (this.syncingConnections) return;
+    const { connection } = info;
+    const source = this.card(info.sourceId)?.dataset.nodeId || info.sourceId;
+    const target = this.card(info.targetId)?.dataset.nodeId || info.targetId;
+    if (!source || !target || source === target) return;
+    const edge: CanvasEdge = { id: newId("edge"), source, target, label: "", directed: true };
+    connection.setParameter("edgeId", edge.id);
+    this.graph.edges.push(edge);
+    this.connections.set(edge.id, connection);
+    this.selectEdge(edge.id);
+    this.openEdgeDialog(edge.id);
+    this.cancelLinkMode();
+    this.queueSave();
+  }
 
-    if (Math.abs(dx) >= Math.abs(dy)) {
-      start = { x: dx >= 0 ? source.x + source.width : source.x, y: sourceCenter.y };
-      end = { x: dx >= 0 ? target.x : target.x + target.width, y: targetCenter.y };
-      const bend = Math.max(45, Math.abs(end.x - start.x) * 0.42);
-      control1 = { x: start.x + (dx >= 0 ? bend : -bend), y: start.y };
-      control2 = { x: end.x - (dx >= 0 ? bend : -bend), y: end.y };
-    } else {
-      start = { x: sourceCenter.x, y: dy >= 0 ? source.y + source.height : source.y };
-      end = { x: targetCenter.x, y: dy >= 0 ? target.y : target.y + target.height };
-      const bend = Math.max(45, Math.abs(end.y - start.y) * 0.42);
-      control1 = { x: start.x, y: start.y + (dy >= 0 ? bend : -bend) };
-      control2 = { x: end.x, y: end.y - (dy >= 0 ? bend : -bend) };
-    }
+  private onConnectionDetached(connection: Connection) {
+    if (this.syncingConnections) return;
+    const edgeId = connection.getParameter("edgeId") as string;
+    if (!edgeId) return;
+    this.connections.delete(edgeId);
+    this.graph.edges = this.graph.edges.filter((edge) => edge.id !== edgeId);
+    if (this.selectedEdge === edgeId) this.selectedEdge = undefined;
+    this.refreshSelection();
+    this.queueSave();
+  }
 
-    const screen = (point: Point) => ({
-      x: this.pan.x + point.x * this.scale,
-      y: this.pan.y + point.y * this.scale,
+  private refreshConnections() {
+    this.connections.forEach((connection, id) => {
+      connection.removeClass("syc-connection-selected");
+      if (id === this.selectedEdge) connection.addClass("syc-connection-selected");
     });
-    const a = screen(start);
-    const b = screen(control1);
-    const c = screen(control2);
-    const d = screen(end);
-    return {
-      path: `M ${a.x} ${a.y} C ${b.x} ${b.y}, ${c.x} ${c.y}, ${d.x} ${d.y}`,
-      label: { x: (a.x + d.x) / 2, y: (a.y + d.y) / 2 - 9 },
-    };
+  }
+
+  private openEdgeDialog(edgeId: string) {
+    const edge = this.graph.edges.find((item) => item.id === edgeId);
+    if (!edge) return;
+    this.selectedEdge = edgeId;
+    this.refreshSelection();
+    this.element.querySelector<HTMLElement>("[data-role='edge-dialog']")!.classList.remove("is-hidden");
+    const input = this.element.querySelector<HTMLInputElement>("[data-role='edge-label']")!;
+    input.value = edge.label || "";
+    window.setTimeout(() => input.focus(), 0);
+  }
+
+  private closeEdgeDialog() {
+    this.element.querySelector("[data-role='edge-dialog']")?.classList.add("is-hidden");
+  }
+
+  private saveEdgeLabel() {
+    const edge = this.graph.edges.find((item) => item.id === this.selectedEdge);
+    if (!edge) return this.closeEdgeDialog();
+    edge.label = this.element.querySelector<HTMLInputElement>("[data-role='edge-label']")!.value.trim();
+    this.connections.get(edge.id)?.setLabel(edge.label);
+    this.closeEdgeDialog();
+    this.queueSave();
   }
 
   private setScale(next: number, pointer?: Point) {
@@ -720,7 +863,7 @@ class CanvasView {
   private updateTransform() {
     this.world().style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.scale})`;
     this.element.querySelector<HTMLElement>(".syc-zoom")!.textContent = `${Math.round(this.scale * 100)}%`;
-    this.renderEdges();
+    this.plumbing?.setZoom(this.scale, true);
   }
 
   private positionCard(node: CanvasNode) {
@@ -780,10 +923,6 @@ class CanvasView {
 
   private world() {
     return this.element.querySelector<HTMLElement>(".syc-world")!;
-  }
-
-  private svg() {
-    return this.element.querySelector<SVGSVGElement>(".syc-edges")!;
   }
 
   private card(id: string) {

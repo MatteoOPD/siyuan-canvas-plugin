@@ -2,7 +2,7 @@ services:
   canvas-installer:
     image: alpine:3.20
     environment:
-      PLUGIN_URL: https://github.com/MatteoOPD/siyuan-canvas-plugin/releases/download/v0.2.0/package.zip
+      PLUGIN_URL: https://github.com/MatteoOPD/siyuan-canvas-plugin/releases/download/v0.3.0/package.zip
     volumes:
       - siyuan_data:/workspace
     entrypoint: ["/bin/sh", "-ec"]

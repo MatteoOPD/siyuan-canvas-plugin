@@ -4,11 +4,12 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 
 ## Bedienung
 
-- `+ Referenz`: Dokument oder Block per ID/Suche hinzufügen; SiYuan-IDs können auch auf die Fläche gezogen werden.
+- `+ Referenz`: Öffnet eine integrierte Suche für Dokumente und Blöcke (Tastatur: Pfeile und Enter).
+- Dokumente aus dem Dateibaum und einzelne Blöcke lassen sich direkt auf die Fläche ziehen; auch mehrere IDs in einem Drop werden übernommen.
 - `+ Text`: freie, nur im Canvas gespeicherte Textkarte erstellen.
 - Karten am Kopf verschieben und an der rechten unteren Ecke skalieren.
 - Dokumente und Blöcke direkt in der Karte wie in SiYuan bearbeiten.
-- `Verbinden` wählen und anschließend Quell- und Zielkarte anklicken. Alternativ einen sichtbaren Anschluss-Punkt anklicken.
+- Zum Verbinden einen Anschluss-Punkt am Kartenrand auf die Zielkarte ziehen. `Verbinden` blendet die Punkte dauerhaft ein.
 - Kante doppelt anklicken, um ihre Beschriftung zu ändern; Kante auswählen und mit `Entf` löschen.
 - Mausrad zoomt zum Mauszeiger; Ziehen auf freier Fläche verschiebt den Canvas.
 
