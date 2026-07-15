@@ -1,0 +1,39 @@
+services:
+  canvas-installer:
+    image: alpine:3.20
+    environment:
+      PLUGIN_URL: https://github.com/MatteoOPD/siyuan-canvas-plugin/releases/download/v0.2.0/package.zip
+    volumes:
+      - siyuan_data:/workspace
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        apk add --no-cache curl unzip
+        mkdir -p /workspace/data/plugins/siyuan-canvas
+        curl -fsSL "$${PLUGIN_URL}" -o /tmp/siyuan-canvas.zip
+        unzip -oq /tmp/siyuan-canvas.zip -d /workspace/data/plugins/siyuan-canvas
+        chown -R 1000:1000 /workspace/data/plugins/siyuan-canvas
+    restart: "no"
+
+  siyuan:
+    image: b3log/siyuan:v3.7.1
+    container_name: siyuan
+    environment:
+      TZ: Europe/Berlin
+      PUID: "1000"
+      PGID: "1000"
+    command:
+      - serve
+      - --workspace=/siyuan/workspace
+      - --accessAuthCode=BITTE_IN_EASYPANEL_ERSETZEN
+    volumes:
+      - siyuan_data:/siyuan/workspace
+    ports:
+      - "6806:6806"
+    depends_on:
+      canvas-installer:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  siyuan_data:

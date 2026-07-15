@@ -1,18 +1,27 @@
 # SiYuan Canvas
 
-Ein schlankes SiYuan-Canvas: Referenzkarten zeigen immer aktuellen SiYuan-Inhalt; gespeichert werden nur Graph, freie Textkarten und Pfeile.
+Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Referenzkarten verwenden den nativen SiYuan-Editor direkt im Canvas; Änderungen landen damit unmittelbar in der Originalquelle.
+
+## Bedienung
+
+- `+ Referenz`: Dokument oder Block per ID/Suche hinzufügen; SiYuan-IDs können auch auf die Fläche gezogen werden.
+- `+ Text`: freie, nur im Canvas gespeicherte Textkarte erstellen.
+- Karten am Kopf verschieben und an der rechten unteren Ecke skalieren.
+- Dokumente und Blöcke direkt in der Karte wie in SiYuan bearbeiten.
+- `Verbinden` wählen und anschließend Quell- und Zielkarte anklicken. Alternativ einen sichtbaren Anschluss-Punkt anklicken.
+- Kante doppelt anklicken, um ihre Beschriftung zu ändern; Kante auswählen und mit `Entf` löschen.
+- Mausrad zoomt zum Mauszeiger; Ziehen auf freier Fläche verschiebt den Canvas.
+
+Der Canvas speichert nur Layout, Textkarten und Verbindungen. SiYuan bleibt für Dokument- und Blockinhalte die Quelle der Wahrheit.
+
+## Entwicklung
 
 ```bash
 npm install
 npm run build
+npm run package
 ```
 
-Kopiere `dist/`, `plugin.json` und diese README nach `data/plugins/siyuan-canvas/`, oder verlinke den Projektordner für die Entwicklung.
-
-- Toolbar-Symbol: neuen oder gespeicherten Canvas öffnen.
-- `+ Referenz`: ID eingeben oder SiYuan durchsuchen; Drop akzeptiert SiYuan-ID/URL.
-- `Verbinden`: Quelle und Ziel anklicken; Beschriftung ist optional.
-- Rechter Bereich: Textkarten bearbeiten oder die Originalquelle einer Referenzkarte speichern.
-- `Canvas speichern` schreibt explizit; zusätzlich erfolgt ein Debounce-Autosave.
+`package.zip` enthält die direkt installierbaren Plugin-Dateien. Das EasyPanel-Beispiel unter [docker-compose.easypanel.yml](docker-compose.easypanel.yml) lädt die Release-ZIP automatisch in das persistente SiYuan-Volume.
 
 Details des JSON-Vertrags: [GRAPH_API.md](GRAPH_API.md).

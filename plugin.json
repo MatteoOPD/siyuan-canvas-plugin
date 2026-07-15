@@ -1,1 +1,13 @@
-{"name":"siyuan-canvas","author":"SiYuan Canvas contributors","url":"https://github.com/MatteoOPD/siyuan-canvas-plugin","version":"0.1.2","minAppVersion":"3.7.0","backends":["windows","linux","darwin","docker","all"],"frontends":["desktop","browser-desktop","desktop-window","all"],"displayName":{"default":"SiYuan Canvas"},"description":{"default":"A lightweight visual canvas for SiYuan documents and blocks."},"readme":{"default":"README.md"},"keywords":["canvas","graph","visual notes"]}
+{
+  "name": "siyuan-canvas",
+  "author": "SiYuan Canvas contributors",
+  "url": "https://github.com/MatteoOPD/siyuan-canvas-plugin",
+  "version": "0.2.0",
+  "minAppVersion": "3.7.0",
+  "backends": ["windows", "linux", "darwin", "docker", "all"],
+  "frontends": ["desktop", "browser-desktop", "desktop-window", "all"],
+  "displayName": { "default": "SiYuan Canvas" },
+  "description": { "default": "A visual canvas with native SiYuan editors for documents and blocks." },
+  "readme": { "default": "README.md" },
+  "keywords": ["canvas", "graph", "visual notes"]
+}
