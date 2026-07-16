@@ -9,6 +9,7 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - `+ Text`: freie, nur im Canvas gespeicherte Textkarte erstellen.
 - Karten am Kopf verschieben und an der rechten unteren Ecke skalieren.
 - Dokumente und Blöcke direkt in der Karte wie in SiYuan bearbeiten.
+- Über einer Karte scrollt das Mausrad deren Inhalt; `Strg`/`Cmd` + Mausrad zoomt weiterhin den Canvas.
 - Zum Verbinden einen Anschluss-Punkt am Kartenrand auf die Zielkarte ziehen. `Verbinden` blendet die Punkte dauerhaft ein.
 - Kante doppelt anklicken, um ihre Beschriftung zu ändern; Kante auswählen und mit `Entf` löschen.
 - Mausrad zoomt zum Mauszeiger; Ziehen auf freier Fläche verschiebt den Canvas.

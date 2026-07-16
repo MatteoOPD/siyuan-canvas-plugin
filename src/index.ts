@@ -328,6 +328,8 @@ class CanvasView {
     viewport.addEventListener(
       "wheel",
       (event) => {
+        const insideCardContent = (event.target as Element).closest(".syc-card__body");
+        if (insideCardContent && !event.ctrlKey && !event.metaKey) return;
         event.preventDefault();
         const rect = viewport.getBoundingClientRect();
         const pointerX = event.clientX - rect.left;
