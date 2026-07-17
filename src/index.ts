@@ -10,6 +10,7 @@ import {
 import "./index.css";
 
 type NodeKind = "document" | "block" | "text";
+type CardColor = "default" | "yellow" | "green" | "blue" | "pink" | "purple";
 
 interface CanvasNode {
   id: string;
@@ -17,6 +18,7 @@ interface CanvasNode {
   docId?: string;
   blockId?: string;
   markdown?: string;
+  color?: CardColor;
   x: number;
   y: number;
   width: number;
@@ -63,6 +65,7 @@ type Interaction =
 const STORAGE_ROOT = "/data/storage/petal/siyuan-canvas";
 const SIYUAN_ID = /^[0-9]{14}-[a-z0-9]{7}$/;
 const SIYUAN_ID_GLOBAL = /[0-9]{14}-[a-z0-9]{7}/g;
+const CARD_COLORS: CardColor[] = ["default", "yellow", "green", "blue", "pink", "purple"];
 
 const newId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -248,10 +251,13 @@ class CanvasView {
           <button class="syc-button syc-button--primary" data-action="reference">＋ Referenz</button>
           <button class="syc-button" data-action="text">＋ Text</button>
           <button class="syc-button" data-action="link">↗ Verbinden</button>
+          <button class="syc-button" data-action="duplicate" data-requires-node disabled>⧉ Duplizieren</button>
+          <button class="syc-button" data-action="color" data-requires-node disabled>● Farbe</button>
           <button class="syc-button syc-button--danger" data-action="delete" disabled>⌫ Löschen</button>
         </div>
         <div class="syc-toolbar__status" data-role="status">Bereit</div>
         <div class="syc-toolbar__group syc-toolbar__group--right">
+          <button class="syc-icon-button" data-action="fit" title="Alle Karten einpassen">⛶</button>
           <button class="syc-icon-button" data-action="zoom-out" title="Verkleinern">−</button>
           <button class="syc-zoom" data-action="zoom-reset" title="Zoom zurücksetzen">90%</button>
           <button class="syc-icon-button" data-action="zoom-in" title="Vergrößern">＋</button>
@@ -301,7 +307,7 @@ class CanvasView {
       maxConnections: -1,
       uniqueEndpoint: true,
     });
-    this.plumbing.addTargetSelector(".syc-card__body", {
+    this.plumbing.addTargetSelector(".syc-card__header, .syc-card__body, .syc-card__footer", {
       anchor: "Continuous",
       maxConnections: -1,
     });
@@ -414,6 +420,12 @@ class CanvasView {
       this.addTextNode();
     } else if (action === "link") {
       this.toggleLinkMode();
+    } else if (action === "duplicate") {
+      await this.duplicateSelectedNode();
+    } else if (action === "color") {
+      this.cycleSelectedColor();
+    } else if (action === "fit") {
+      this.fitToContent();
     } else if (action === "close-search") {
       this.closeSearch();
     } else if (action === "close-edge") {
@@ -591,6 +603,53 @@ class CanvasView {
     this.queueSave();
   }
 
+  private async duplicateSelectedNode() {
+    const source = this.graph.nodes.find((node) => node.id === this.selectedNode);
+    if (!source) return;
+    const duplicate: CanvasNode = {
+      ...source,
+      id: newId("node"),
+      x: source.x + 42,
+      y: source.y + 42,
+    };
+    this.graph.nodes.push(duplicate);
+    await this.appendCard(duplicate);
+    this.selectNode(duplicate.id);
+    this.updateEmptyState();
+    this.queueSave();
+  }
+
+  private cycleSelectedColor() {
+    const node = this.graph.nodes.find((item) => item.id === this.selectedNode);
+    if (!node) return;
+    const current = CARD_COLORS.indexOf(node.color || "default");
+    node.color = CARD_COLORS[(current + 1) % CARD_COLORS.length];
+    const card = this.card(node.id);
+    if (card) card.dataset.color = node.color;
+    this.queueSave();
+  }
+
+  private fitToContent() {
+    if (!this.graph.nodes.length) return;
+    const padding = 72;
+    const minX = Math.min(...this.graph.nodes.map((node) => node.x));
+    const minY = Math.min(...this.graph.nodes.map((node) => node.y));
+    const maxX = Math.max(...this.graph.nodes.map((node) => node.x + node.width));
+    const maxY = Math.max(...this.graph.nodes.map((node) => node.y + node.height));
+    const viewport = this.viewport();
+    const width = Math.max(1, maxX - minX);
+    const height = Math.max(1, maxY - minY);
+    this.scale = Math.min(1.35, Math.max(0.35, Math.min(
+      (viewport.clientWidth - padding * 2) / width,
+      (viewport.clientHeight - padding * 2) / height,
+    )));
+    this.pan = {
+      x: (viewport.clientWidth - width * this.scale) / 2 - minX * this.scale,
+      y: (viewport.clientHeight - height * this.scale) / 2 - minY * this.scale,
+    };
+    this.updateTransform();
+  }
+
   private async renderNodes() {
     this.destroyEditors();
     this.syncingConnections = true;
@@ -607,6 +666,7 @@ class CanvasView {
     card.className = `syc-card syc-card--${node.type}`;
     card.id = node.id;
     card.dataset.nodeId = node.id;
+    card.dataset.color = node.color || "default";
     card.innerHTML = `
       <header class="syc-card__header">
         <span class="syc-card__kind">${node.type === "document" ? "▤ Dokument" : node.type === "block" ? "▦ Block" : "✎ Text"}</span>
@@ -652,6 +712,20 @@ class CanvasView {
         body.append(editorHost);
         const protyle = new Protyle(this.app, editorHost, { blockId: id });
         this.protyles.set(node.id, protyle);
+        body.addEventListener("wheel", (event) => {
+          if (event.ctrlKey || event.metaKey) return;
+          event.stopPropagation();
+          const scroller = body.querySelector<HTMLElement>(".protyle-content");
+          if (!scroller) return;
+          const factor = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+            ? 18
+            : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+              ? scroller.clientHeight
+              : 1;
+          event.preventDefault();
+          scroller.scrollTop += event.deltaY * factor;
+          scroller.scrollLeft += event.deltaX * factor;
+        }, { passive: false });
       } catch (error) {
         body.textContent = `Quelle konnte nicht geladen werden: ${String(error)}`;
         body.classList.add("syc-card__error");
@@ -700,9 +774,6 @@ class CanvasView {
       this.deleteSelection();
     });
 
-    card.querySelectorAll<HTMLElement>(".syc-port").forEach((port) => {
-      port.addEventListener("pointerdown", (event) => event.stopPropagation());
-    });
   }
 
   private selectNode(id: string) {
@@ -731,6 +802,9 @@ class CanvasView {
     });
     const deleteButton = this.element.querySelector<HTMLButtonElement>("[data-action='delete']")!;
     deleteButton.disabled = !this.selectedNode && !this.selectedEdge;
+    this.element.querySelectorAll<HTMLButtonElement>("[data-requires-node]").forEach((button) => {
+      button.disabled = !this.selectedNode;
+    });
     this.refreshConnections();
   }
 

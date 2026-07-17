@@ -11,10 +11,18 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - Dokumente und Blöcke direkt in der Karte wie in SiYuan bearbeiten.
 - Über einer Karte scrollt das Mausrad deren Inhalt; `Strg`/`Cmd` + Mausrad zoomt weiterhin den Canvas.
 - Zum Verbinden einen Anschluss-Punkt am Kartenrand auf die Zielkarte ziehen. `Verbinden` blendet die Punkte dauerhaft ein.
+- Ausgewählte Karten lassen sich duplizieren und durch mehrere Whiteboard-Farben schalten.
+- `⛶` passt alle Karten in die sichtbare Arbeitsfläche ein.
 - Kante doppelt anklicken, um ihre Beschriftung zu ändern; Kante auswählen und mit `Entf` löschen.
 - Mausrad zoomt zum Mauszeiger; Ziehen auf freier Fläche verschiebt den Canvas.
 
 Der Canvas speichert nur Layout, Textkarten und Verbindungen. SiYuan bleibt für Dokument- und Blockinhalte die Quelle der Wahrheit.
+
+## Datenspeicher
+
+Die Graph-Dateien liegen über die SiYuan-Datei-API unter `/data/storage/petal/siyuan-canvas/`. Jeder Canvas besitzt dort eine `<canvasId>.json`; `index.json` enthält die Liste der vorhandenen Canvas-Dateien. Im Docker-Container entspricht das dem Pfad `/siyuan/workspace/data/storage/petal/siyuan-canvas/` und liegt damit im bestehenden SiYuan-Volume.
+
+Gespeichert werden Position, Größe und Farbe der Karten, freie Textkarten sowie Verbindungen und Pfeiltexte. Inhalte referenzierter Dokumente und Blöcke werden nicht kopiert, sondern weiterhin direkt aus SiYuan geladen und dort bearbeitet.
 
 ## EasyPanel: separater Canvas-Installer
 
