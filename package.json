@@ -1,6 +1,6 @@
 {
   "name": "siyuan-canvas",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "scripts": {
     "build": "esbuild src/index.ts --bundle --format=cjs --platform=browser --external:siyuan --outfile=dist/index.js && esbuild src/index.css --bundle --outfile=dist/index.css",

@@ -1610,21 +1610,47 @@ class CanvasView {
 export default class SiYuanCanvas extends Plugin {
   private store = new GraphStore();
   private tabType = "siyuan-canvas";
+  private registeredTabTypes = new Set<string>();
 
   onload() {
     this.addIcons(`<symbol id="iconSiYuanCanvas" viewBox="0 0 32 32"><path d="M5 7h9v9H5zM18 16h9v9h-9zM14 11l4 5M14 16l4 4" fill="none" stroke="currentColor" stroke-width="2"/></symbol>`);
+    this.registerCanvasTab(this.tabType);
+    void this.registerStoredCanvasTabs();
+  }
+
+  private canvasTabType(canvasId: string) {
+    return `${this.tabType}${canvasId}`;
+  }
+
+  private registerCanvasTab(type: string) {
+    if (this.registeredTabTypes.has(type)) return;
     const plugin = this;
     this.addTab({
-      type: this.tabType,
+      type,
       init(this: any) {
         const canvasId = this.data?.canvasId || `canvas-${Date.now()}`;
         const canvasName = this.data?.canvasName || "Unbenannter Canvas";
-        new CanvasView(plugin.app, this.element, canvasId, plugin.store, canvasName).init().catch((error) => {
+        const element = this.element as HTMLElement | undefined;
+        if (!element) {
+          console.error("SiYuan Canvas: Tab-Element fehlt", { canvasId, type });
+          return;
+        }
+        new CanvasView(plugin.app, element, canvasId, plugin.store, canvasName).init().catch((error) => {
           console.error("SiYuan Canvas konnte nicht initialisiert werden", error);
-          this.element.innerHTML = `<div class="syc-error">Canvas konnte nicht geladen werden: ${String(error)}</div>`;
+          element.innerHTML = `<div class="syc-error">Canvas konnte nicht geladen werden: ${String(error)}</div>`;
         });
       },
     });
+    this.registeredTabTypes.add(type);
+  }
+
+  private async registerStoredCanvasTabs() {
+    try {
+      const known = await this.store.list();
+      known.forEach((canvas) => this.registerCanvasTab(this.canvasTabType(canvas.id)));
+    } catch (error) {
+      console.error("SiYuan Canvas: Gespeicherte Canvas-Tabs konnten nicht registriert werden", error);
+    }
   }
 
   onLayoutReady() {
@@ -1656,13 +1682,15 @@ export default class SiYuanCanvas extends Plugin {
   }
 
   private open(canvasId: string, canvasName: string) {
+    const type = this.canvasTabType(canvasId);
+    this.registerCanvasTab(type);
     openTab({
       app: this.app,
       custom: {
         icon: "iconSiYuanCanvas",
         title: canvasName,
         data: { canvasId, canvasName },
-        id: `${this.name}${this.tabType}${canvasId}`,
+        id: `${this.name}${type}`,
       },
     });
   }
