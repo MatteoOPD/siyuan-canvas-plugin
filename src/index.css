@@ -160,10 +160,14 @@
   transform-origin: 0 0;
 }
 
-.syc-world .jtk-connector { z-index: 1; cursor: pointer; }
-.syc-world .jtk-endpoint { z-index: 8; }
-.syc-world .jtk-overlay { z-index: 9; }
-.syc-world .jtk-connector path { transition: stroke-width 100ms ease, filter 100ms ease; }
+.syc-world .jtk-connector { z-index: 3 !important; opacity: 1 !important; cursor: pointer; }
+.syc-world .jtk-endpoint { z-index: 7 !important; }
+.syc-world .jtk-overlay { z-index: 8 !important; opacity: 1 !important; }
+.syc-world .jtk-connector path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke-width 100ms ease, filter 100ms ease;
+}
 .syc-world .jtk-connector:hover path,
 .syc-world .syc-connection-selected path {
   stroke-width: 3;
@@ -182,7 +186,7 @@
 .syc-card {
   --syc-card-tint: var(--syc-accent);
   position: absolute;
-  z-index: 2;
+  z-index: 5;
   display: grid;
   grid-template-rows: 40px minmax(0, 1fr) 28px;
   box-sizing: border-box;
@@ -784,6 +788,67 @@
   color: var(--b3-card-error-color);
 }
 
+.syc-manager {
+  display: grid;
+  gap: 12px;
+  max-height: min(70vh, 680px);
+  overflow: hidden;
+}
+
+.syc-manager__create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.syc-manager__hint {
+  color: var(--b3-theme-on-surface-light);
+  font-size: 12px;
+}
+
+.syc-manager__list {
+  display: grid;
+  gap: 7px;
+  min-height: 80px;
+  overflow: auto;
+}
+
+.syc-manager__row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto auto;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: 7px;
+  background: var(--b3-theme-surface);
+}
+
+.syc-manager__file {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.syc-manager__file small {
+  overflow: hidden;
+  padding: 0 5px;
+  color: var(--b3-theme-on-surface-light);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.syc-manager__delete[data-confirm="true"] {
+  color: var(--b3-card-error-color);
+  font-weight: 600;
+}
+
+.syc-manager__empty {
+  padding: 28px 12px;
+  color: var(--b3-theme-on-surface-light);
+  text-align: center;
+}
+
 @media (max-width: 800px) {
   .syc-toolbar__status,
   .syc-button--danger,
@@ -793,5 +858,13 @@
 
   .syc-toolbar {
     overflow-x: auto;
+  }
+
+  .syc-manager__row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .syc-manager__file {
+    grid-column: 1 / -1;
   }
 }

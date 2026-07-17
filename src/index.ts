@@ -1,4 +1,4 @@
-import { App, Plugin, Protyle, openTab, showMessage } from "siyuan";
+import { App, Dialog, Plugin, Protyle, openTab, showMessage } from "siyuan";
 import {
   BrowserJsPlumbInstance,
   Connection,
@@ -100,6 +100,13 @@ const emptyGraph = (canvasId: string, name = "Unbenannter Canvas"): CanvasGraph 
   edges: [],
 });
 
+const escapeHtml = (value: string) => value
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#039;");
+
 async function kernel<T>(path: string, data: unknown): Promise<T> {
   const response = await fetch(path, {
     method: "POST",
@@ -173,6 +180,19 @@ class GraphStore {
       entry,
       ...previous.filter((item) => item.id !== graph.canvasId),
     ]);
+  }
+
+  async rename(id: string, name: string) {
+    const graph = await this.load(id);
+    if (!graph) throw new Error("Canvas-Datei wurde nicht gefunden");
+    graph.name = name;
+    await this.save(graph);
+  }
+
+  async remove(id: string) {
+    await kernel<void>("/api/file/removeFile", { path: `${STORAGE_ROOT}/${id}.json` });
+    const previous = await this.list();
+    await putJson(`${STORAGE_ROOT}/index.json`, previous.filter((item) => item.id !== id));
   }
 }
 
@@ -362,7 +382,6 @@ class CanvasView {
       hoverPaintStyle: { stroke: "var(--b3-theme-primary)", strokeWidth: 3 },
       endpoint: { type: "Dot", options: { radius: 4 } },
       endpointStyle: { fill: "var(--b3-theme-primary)" },
-      connectionOverlays: [{ type: "Arrow", options: { location: 1, width: 11, length: 11 } }],
       connectionsDetachable: true,
     });
     this.plumbing.addSourceSelector(".syc-port", {
@@ -1004,8 +1023,14 @@ class CanvasView {
     this.connections.clear();
     this.world().innerHTML = "";
     await Promise.all(this.graph.nodes.map((node) => this.appendCard(node)));
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
     this.syncingConnections = false;
     this.renderConnections();
+    this.graph.nodes.forEach((node) => {
+      const card = this.card(node.id);
+      if (card && node.type !== "group") this.plumbing?.revalidate(card);
+    });
+    this.plumbing?.repaintEverything();
   }
 
   private async appendCard(node: CanvasNode) {
@@ -1299,8 +1324,8 @@ class CanvasView {
       const connection = this.plumbing.connect({ source, target, connector: this.edgeConnector(edge.style) });
       if (!connection) continue;
       connection.setParameter("edgeId", edge.id);
-      connection.setLabel(edge.label || "");
       this.connections.set(edge.id, connection);
+      this.configureConnection(connection, edge);
     }
     this.syncingConnections = false;
     this.refreshConnections();
@@ -1318,18 +1343,30 @@ class CanvasView {
   private onConnectionCreated(info: { connection: Connection; sourceId: string; targetId: string }) {
     if (this.syncingConnections) return;
     const { connection } = info;
-    const source = this.card(info.sourceId)?.dataset.nodeId || info.sourceId;
-    const target = this.card(info.targetId)?.dataset.nodeId || info.targetId;
-    if (!source || !target || source === target) return;
+    const source = this.connectionNodeId(connection.source, info.sourceId);
+    const target = this.connectionNodeId(connection.target, info.targetId);
+    if (!source || !target || source === target) {
+      this.syncingConnections = true;
+      this.plumbing?.deleteConnection(connection);
+      this.syncingConnections = false;
+      return;
+    }
     this.recordHistory();
     const edge: CanvasEdge = { id: newId("edge"), source, target, label: "", color: "default", style: "bezier", directed: true };
     connection.setParameter("edgeId", edge.id);
     this.graph.edges.push(edge);
     this.connections.set(edge.id, connection);
+    this.configureConnection(connection, edge);
     this.selectEdge(edge.id);
     this.openEdgeDialog(edge.id);
     this.cancelLinkMode();
     this.queueSave();
+  }
+
+  private connectionNodeId(element: unknown, fallbackId: string) {
+    const candidate = element instanceof Element ? element : document.getElementById(fallbackId);
+    return candidate?.closest<HTMLElement>(".syc-card")?.dataset.nodeId
+      || this.card(fallbackId)?.dataset.nodeId;
   }
 
   private onConnectionDetached(connection: Connection) {
@@ -1347,6 +1384,8 @@ class CanvasView {
   private refreshConnections() {
     this.connections.forEach((connection, id) => {
       const edge = this.graph.edges.find((item) => item.id === id);
+      if (!edge) return;
+      this.configureConnection(connection, edge);
       const color = edge?.color || "default";
       const stroke = COLOR_VALUES[color]
         || getComputedStyle(this.element).getPropertyValue("--syc-accent").trim()
@@ -1360,6 +1399,16 @@ class CanvasView {
       connection.removeClass("syc-connection-selected");
       if (id === this.selectedEdge) connection.addClass("syc-connection-selected");
     });
+  }
+
+  private configureConnection(connection: Connection, edge: CanvasEdge) {
+    connection.setLabel(edge.label || "");
+    if (!connection.getOverlay("syc-arrow")) {
+      this.plumbing?.addOverlay(connection, {
+        type: "Arrow",
+        options: { id: "syc-arrow", location: 1, width: 14, length: 14, foldback: 0.72 },
+      });
+    }
   }
 
   private edgeConnector(style: EdgeStyle = "bezier") {
@@ -1664,21 +1713,84 @@ export default class SiYuanCanvas extends Plugin {
 
   private async openMenu() {
     const known = await this.store.list();
-    const options = ["Neuen Canvas erstellen", ...known.map((item) => item.name || item.id)];
-    const selected = prompt(
-      `Canvas öffnen:\n${options.map((item, index) => `${index + 1}: ${item}`).join("\n")}\n\nNummer:`,
-      "1",
-    );
-    const index = (Number(selected) || 0) - 1;
-    if (index < 0 || index >= options.length) return;
-    if (index === 0) {
-      const name = prompt("Name des neuen Canvas:", "Neuer Canvas")?.trim();
+    const rows = known.map((item) => {
+      const updated = new Date(item.updatedAt);
+      const date = Number.isNaN(updated.getTime()) ? "" : updated.toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" });
+      return `<div class="syc-manager__row" data-canvas-id="${escapeHtml(item.id)}">
+        <div class="syc-manager__file">
+          <input class="b3-text-field syc-manager__name" maxlength="80" value="${escapeHtml(item.name || item.id)}" aria-label="Canvas-Name">
+          <small>${escapeHtml(date || item.id)}</small>
+        </div>
+        <button class="b3-button b3-button--outline" data-action="manager-open">Öffnen</button>
+        <button class="b3-button b3-button--outline" data-action="manager-rename">Speichern</button>
+        <button class="b3-button b3-button--cancel syc-manager__delete" data-action="manager-delete">Löschen</button>
+      </div>`;
+    }).join("");
+    const dialog = new Dialog({
+      title: "Canvas verwalten",
+      width: "720px",
+      content: `<div class="b3-dialog__content syc-manager">
+        <form class="syc-manager__create" data-role="manager-create">
+          <input class="b3-text-field" data-role="manager-new-name" maxlength="80" value="Neuer Canvas" aria-label="Name des neuen Canvas">
+          <button class="b3-button b3-button--text" type="submit">＋ Erstellen</button>
+        </form>
+        <div class="syc-manager__hint">Canvas öffnen, umbenennen oder dauerhaft löschen. Geöffnete Canvas-Tabs vor dem Löschen schließen.</div>
+        <div class="syc-manager__list" data-role="manager-list">${rows || '<div class="syc-manager__empty">Noch keine Canvas-Dateien vorhanden.</div>'}</div>
+      </div>`,
+    });
+    const createForm = dialog.element.querySelector<HTMLFormElement>("[data-role='manager-create']")!;
+    createForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const name = dialog.element.querySelector<HTMLInputElement>("[data-role='manager-new-name']")!.value.trim();
       if (!name) return;
+      dialog.destroy();
       this.open(`canvas-${Date.now()}`, name);
-      return;
-    }
-    const existing = known[index - 1];
-    this.open(existing.id, existing.name || "Unbenannter Canvas");
+    });
+    dialog.element.addEventListener("click", async (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-action]");
+      const row = button?.closest<HTMLElement>(".syc-manager__row");
+      if (!button || !row) return;
+      const id = row.dataset.canvasId!;
+      const input = row.querySelector<HTMLInputElement>(".syc-manager__name")!;
+      const name = input.value.trim();
+      if (button.dataset.action === "manager-open") {
+        dialog.destroy();
+        this.open(id, name || "Unbenannter Canvas");
+        return;
+      }
+      if (button.dataset.action === "manager-rename") {
+        if (!name) return showMessage("Der Canvas-Name darf nicht leer sein");
+        try {
+          await this.store.rename(id, name);
+          button.textContent = "Gespeichert";
+          window.setTimeout(() => { button.textContent = "Speichern"; }, 1400);
+        } catch (error) {
+          showMessage(`Canvas konnte nicht umbenannt werden: ${String(error)}`);
+        }
+        return;
+      }
+      if (button.dataset.action === "manager-delete") {
+        if (button.dataset.confirm !== "true") {
+          button.dataset.confirm = "true";
+          button.textContent = "Wirklich löschen?";
+          window.setTimeout(() => {
+            if (!button.isConnected) return;
+            button.dataset.confirm = "false";
+            button.textContent = "Löschen";
+          }, 4000);
+          return;
+        }
+        try {
+          await this.store.remove(id);
+          row.remove();
+          const list = dialog.element.querySelector<HTMLElement>("[data-role='manager-list']")!;
+          if (!list.querySelector(".syc-manager__row")) list.innerHTML = '<div class="syc-manager__empty">Noch keine Canvas-Dateien vorhanden.</div>';
+          showMessage("Canvas gelöscht");
+        } catch (error) {
+          showMessage(`Canvas konnte nicht gelöscht werden: ${String(error)}`);
+        }
+      }
+    });
   }
 
   private open(canvasId: string, canvasName: string) {

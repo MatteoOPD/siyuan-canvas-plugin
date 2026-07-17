@@ -4,6 +4,7 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 
 ## Bedienung
 
+- Der Toolbar-Button öffnet eine Canvas-Verwaltung zum Erstellen, Öffnen, Umbenennen und dauerhaften Löschen alter Canvas-Dateien.
 - Jeder Canvas erhält beim Anlegen einen Namen; der Name kann oben in der Werkzeugleiste geändert werden.
 - `+ Referenz`: Öffnet eine integrierte Suche für Dokumente und Blöcke (Tastatur: Pfeile und Enter).
 - Dokumentkarten sind blau mit Seitensymbol, Blockkarten violett mit Absatzsymbol gekennzeichnet.
