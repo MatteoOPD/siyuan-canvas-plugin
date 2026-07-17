@@ -2,7 +2,7 @@
   "name": "siyuan-canvas",
   "author": "SiYuan Canvas contributors",
   "url": "https://github.com/MatteoOPD/siyuan-canvas-plugin",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "minAppVersion": "3.7.0",
   "backends": ["windows", "linux", "darwin", "docker", "all"],
   "frontends": ["desktop", "browser-desktop", "desktop-window", "all"],

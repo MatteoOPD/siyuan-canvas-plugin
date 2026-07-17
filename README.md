@@ -11,6 +11,10 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - `+ Text`: freie, nur im Canvas gespeicherte Textkarte erstellen.
 - `Form`: Rechteck, Ellipse oder Raute mit frei editierbarer Beschriftung erstellen.
 - Karten am Kopf verschieben und an der rechten unteren Ecke skalieren.
+- Auf freier Fläche ziehen erstellt eine Lasso-Auswahl; `Shift` ergänzt Karten, `Strg+A` wählt alle Karten.
+- Mehrere ausgewählte Karten lassen sich gemeinsam bewegen, färben, duplizieren, löschen, ausrichten, verteilen oder gruppieren. Die schwebende Leiste erscheint direkt über der Auswahl.
+- Verschieben rastet am Punktraster ein. `Alt` umgeht das Raster, `Shift` beschränkt die Bewegung auf eine Achse.
+- `Strg+Z` und `Strg+Umschalt+Z` machen Canvas-Änderungen rückgängig beziehungsweise wiederholen sie.
 - Dokumente und Blöcke direkt in der Karte wie in SiYuan bearbeiten.
 - Über einer Karte scrollt das Mausrad deren Inhalt; `Strg`/`Cmd` + Mausrad zoomt weiterhin den Canvas.
 - Zum Verbinden einen Anschluss-Punkt am Kartenrand auf die Zielkarte ziehen. `Verbinden` blendet die Punkte dauerhaft ein.
@@ -18,8 +22,8 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - Gruppen bilden beschriftete Bereiche; beim Verschieben einer Gruppe bewegen sich enthaltene Karten mit.
 - Ausgewählte Karten lassen sich duplizieren; ein Doppelklick auf freie Fläche erstellt eine Textkarte.
 - `⛶` passt alle Karten ein, `▣` zoomt auf die aktuelle Karte beziehungsweise Verbindung (`Shift+1`/`Shift+2`).
-- Pfeil anklicken und `Pfeil` wählen (oder doppelt anklicken), um Beschriftung und Linienform – gebogen, gerade oder rechtwinklig – zu ändern. Mit `Entf` wird der ausgewählte Pfeil gelöscht.
-- Mausrad zoomt zum Mauszeiger; Ziehen auf freier Fläche verschiebt den Canvas.
+- Pfeil anklicken und `Pfeil` wählen (oder doppelt anklicken), um Quelle, Ziel, Beschriftung und Linienform – gebogen, gerade oder rechtwinklig – zu ändern. Mit `Entf` wird der ausgewählte Pfeil gelöscht.
+- Mausrad zoomt zum Mauszeiger; `Leertaste` + Ziehen oder die mittlere Maustaste verschiebt den Canvas.
 
 Der Canvas speichert nur Layout, Textkarten und Verbindungen. SiYuan bleibt für Dokument- und Blockinhalte die Quelle der Wahrheit.
 

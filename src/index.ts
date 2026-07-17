@@ -67,12 +67,15 @@ interface ReferenceResult {
 
 type Interaction =
   | { type: "pan"; startX: number; startY: number }
-  | { type: "move"; nodeId: string; startX: number; startY: number; originX: number; originY: number; members?: Array<{ id: string; x: number; y: number }> }
-  | { type: "resize"; nodeId: string; startX: number; startY: number; width: number; height: number };
+  | { type: "lasso"; startX: number; startY: number; additive: boolean; initial: string[] }
+  | { type: "move"; nodeId: string; startX: number; startY: number; origins: Array<{ id: string; x: number; y: number }>; before: string }
+  | { type: "resize"; nodeId: string; startX: number; startY: number; width: number; height: number; before: string };
 
 const STORAGE_ROOT = "/data/storage/petal/siyuan-canvas";
 const SIYUAN_ID = /^[0-9]{14}-[a-z0-9]{7}$/;
 const SIYUAN_ID_GLOBAL = /[0-9]{14}-[a-z0-9]{7}/g;
+const GRID_SIZE = 22;
+const HISTORY_LIMIT = 50;
 const CARD_COLORS: CardColor[] = ["default", "red", "orange", "yellow", "green", "cyan", "blue", "pink", "purple"];
 const COLOR_VALUES: Record<CardColor, string> = {
   default: "",
@@ -229,6 +232,7 @@ class CanvasView {
   private scale = 0.9;
   private pan: Point = { x: 80, y: 60 };
   private selectedNode?: string;
+  private selectedNodes = new Set<string>();
   private selectedEdge?: string;
   private linkMode = false;
   private interaction?: Interaction;
@@ -239,6 +243,9 @@ class CanvasView {
   private plumbing?: BrowserJsPlumbInstance;
   private connections = new Map<string, Connection>();
   private syncingConnections = false;
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
+  private spacePressed = false;
 
   constructor(
     private app: App,
@@ -270,6 +277,7 @@ class CanvasView {
 
   private mount() {
     this.element.classList.add("syc-root");
+    this.element.tabIndex = 0;
     this.element.innerHTML = `
       <div class="syc-toolbar">
         <div class="syc-toolbar__group">
@@ -286,6 +294,8 @@ class CanvasView {
         <input class="syc-canvas-name" data-role="canvas-name" maxlength="80" aria-label="Canvas-Name" value="Unbenannter Canvas">
         <div class="syc-toolbar__status" data-role="status">Bereit</div>
         <div class="syc-toolbar__group syc-toolbar__group--right">
+          <button class="syc-icon-button" data-action="undo" data-role="undo" disabled title="Rückgängig (Strg+Z)">↶</button>
+          <button class="syc-icon-button" data-action="redo" data-role="redo" disabled title="Wiederholen (Strg+Umschalt+Z)">↷</button>
           <button class="syc-icon-button" data-action="fit" title="Alle Karten einpassen">⛶</button>
           <button class="syc-icon-button" data-action="fit-selection" data-requires-selection disabled title="Auswahl einpassen">▣</button>
           <button class="syc-icon-button" data-action="zoom-out" title="Verkleinern">−</button>
@@ -304,6 +314,7 @@ class CanvasView {
       </div>
       <div class="syc-viewport">
         <div class="syc-world"></div>
+        <div class="syc-lasso is-hidden" data-role="lasso"></div>
         <div class="syc-empty">
           <div class="syc-empty__icon">◇</div>
           <strong>Dein Canvas ist noch leer</strong>
@@ -323,9 +334,22 @@ class CanvasView {
         <form class="syc-dialog syc-dialog--small" data-role="edge-form">
           <header class="syc-dialog__header"><strong>Pfeil bearbeiten</strong><button type="button" class="syc-dialog__close" data-action="close-edge">×</button></header>
           <input class="syc-search" data-role="edge-label" maxlength="80" placeholder="Beschriftung (optional)">
+          <label class="syc-field"><span>Von</span><select data-role="edge-source"></select></label>
+          <label class="syc-field"><span>Nach</span><select data-role="edge-target"></select></label>
           <label class="syc-field"><span>Linienform</span><select data-role="edge-style"><option value="bezier">Gebogen</option><option value="straight">Gerade</option><option value="orthogonal">Rechtwinklig</option></select></label>
           <div class="syc-dialog__actions"><button type="button" class="syc-button" data-action="close-edge">Abbrechen</button><button class="syc-button syc-button--primary" type="submit">Übernehmen</button></div>
         </form>
+      </div>
+      <div class="syc-selection-bar is-hidden" data-role="selection-bar" aria-label="Auswahl bearbeiten">
+        <span data-role="selection-count"></span>
+        <button data-action="floating-color" title="Farbe">●</button>
+        <button data-action="duplicate" title="Duplizieren">⧉</button>
+        <button data-action="align-left" data-requires-multi title="Links ausrichten">⇤</button>
+        <button data-action="align-center" data-requires-multi title="Horizontal zentrieren">↔</button>
+        <button data-action="align-top" data-requires-multi title="Oben ausrichten">⇡</button>
+        <button data-action="distribute-horizontal" data-requires-three title="Horizontal verteilen">⇹</button>
+        <button data-action="group-selection" title="Auswahl gruppieren">▣</button>
+        <button data-action="delete" class="is-danger" title="Löschen">⌫</button>
       </div>`;
   }
 
@@ -387,12 +411,27 @@ class CanvasView {
 
     viewport.addEventListener("pointerdown", (event) => {
       if (event.target === viewport || event.target === this.world()) {
-        this.clearSelection();
-        this.interaction = {
-          type: "pan",
-          startX: event.clientX - this.pan.x,
-          startY: event.clientY - this.pan.y,
-        };
+        this.element.focus({ preventScroll: true });
+        event.preventDefault();
+        if (event.button === 1 || this.spacePressed) {
+          this.interaction = {
+            type: "pan",
+            startX: event.clientX - this.pan.x,
+            startY: event.clientY - this.pan.y,
+          };
+        } else if (event.button === 0) {
+          if (!event.shiftKey) this.clearSelection();
+          this.interaction = {
+            type: "lasso",
+            startX: event.clientX,
+            startY: event.clientY,
+            additive: event.shiftKey,
+            initial: [...this.selectedNodes],
+          };
+          this.updateLasso(event.clientX, event.clientY);
+        } else {
+          return;
+        }
         viewport.setPointerCapture(event.pointerId);
       }
     });
@@ -406,9 +445,13 @@ class CanvasView {
     viewport.addEventListener("pointermove", (event) => this.onPointerMove(event));
     viewport.addEventListener("pointerup", (event) => {
       if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
-      if (this.interaction?.type === "move" || this.interaction?.type === "resize") {
+      if (this.interaction?.type === "lasso") {
+        this.finishLasso(event.clientX, event.clientY, this.interaction);
+      } else if (this.interaction?.type === "move" || this.interaction?.type === "resize") {
+        this.commitHistorySnapshot(this.interaction.before);
         this.queueSave();
       }
+      this.element.querySelector("[data-role='lasso']")?.classList.add("is-hidden");
       this.interaction = undefined;
     });
 
@@ -431,11 +474,28 @@ class CanvasView {
     this.element.addEventListener("keydown", (event) => {
       const editing = event.target instanceof HTMLTextAreaElement
         || event.target instanceof HTMLInputElement
+        || event.target instanceof HTMLSelectElement
         || (event.target as HTMLElement).isContentEditable;
       if (event.key === "Escape") {
         this.closeSearch();
         this.closeEdgeDialog();
         this.cancelLinkMode();
+      }
+      if (!editing && event.code === "Space") {
+        event.preventDefault();
+        this.spacePressed = true;
+      }
+      if (!editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        void (event.shiftKey ? this.redo() : this.undo());
+      }
+      if (!editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        void this.redo();
+      }
+      if (!editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        this.selectNodes(this.graph.nodes.map((node) => node.id));
       }
       if ((event.key === "Delete" || event.key === "Backspace") && !editing) {
         void this.handleAction("delete");
@@ -449,13 +509,18 @@ class CanvasView {
         this.fitToSelection();
       }
     });
+    this.element.addEventListener("keyup", (event) => {
+      if (event.code === "Space") this.spacePressed = false;
+    });
     const input = this.element.querySelector<HTMLInputElement>("[data-role='search-input']")!;
     input.addEventListener("input", () => {
       window.clearTimeout(this.searchTimer);
       this.searchTimer = window.setTimeout(() => void this.renderSearchResults(input.value), 180);
     });
     input.addEventListener("keydown", (event) => this.onSearchKeydown(event));
-    this.element.querySelector<HTMLInputElement>("[data-role='canvas-name']")!.addEventListener("input", (event) => {
+    const canvasName = this.element.querySelector<HTMLInputElement>("[data-role='canvas-name']")!;
+    canvasName.addEventListener("focus", () => this.recordHistory());
+    canvasName.addEventListener("input", (event) => {
       this.graph.name = (event.target as HTMLInputElement).value.trim() || "Unbenannter Canvas";
       this.queueSave();
     });
@@ -471,7 +536,10 @@ class CanvasView {
         }
       });
     });
-    new ResizeObserver(() => this.plumbing?.repaintEverything()).observe(viewport);
+    new ResizeObserver(() => {
+      this.plumbing?.repaintEverything();
+      this.positionSelectionBar();
+    }).observe(viewport);
   }
 
   private async handleAction(action: string, trigger?: HTMLElement) {
@@ -490,11 +558,17 @@ class CanvasView {
     } else if (action === "link") {
       this.toggleLinkMode();
     } else if (action === "duplicate") {
-      await this.duplicateSelectedNode();
+      await this.duplicateSelectedNodes();
     } else if (action === "color") {
       this.toggleColorMenu();
     } else if (action === "set-color") {
       this.setSelectedColor((trigger?.dataset.color || "default") as CardColor);
+    } else if (action === "floating-color") {
+      this.toggleColorMenu(true);
+    } else if (action === "align-left" || action === "align-center" || action === "align-top" || action === "distribute-horizontal") {
+      this.alignSelection(action);
+    } else if (action === "group-selection") {
+      this.groupSelection();
     } else if (action === "fit") {
       this.fitToContent();
     } else if (action === "fit-selection") {
@@ -507,6 +581,10 @@ class CanvasView {
       this.deleteSelection();
     } else if (action === "save") {
       await this.save(true);
+    } else if (action === "undo") {
+      await this.undo();
+    } else if (action === "redo") {
+      await this.redo();
     } else if (action === "zoom-in") {
       this.setScale(this.scale * 1.1);
     } else if (action === "zoom-out") {
@@ -525,16 +603,27 @@ class CanvasView {
       this.updateTransform();
       return;
     }
+    if (this.interaction.type === "lasso") {
+      this.updateLasso(event.clientX, event.clientY);
+      return;
+    }
 
     const node = this.graph.nodes.find((item) => item.id === this.interaction!.nodeId);
     if (!node) return;
     if (this.interaction.type === "move") {
-      const dx = (event.clientX - this.interaction.startX) / this.scale;
-      const dy = (event.clientY - this.interaction.startY) / this.scale;
-      node.x = this.interaction.originX + dx;
-      node.y = this.interaction.originY + dy;
-      this.positionCard(node);
-      this.interaction.members?.forEach((origin) => {
+      let dx = (event.clientX - this.interaction.startX) / this.scale;
+      let dy = (event.clientY - this.interaction.startY) / this.scale;
+      if (event.shiftKey) {
+        if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+        else dx = 0;
+      }
+      const primary = this.interaction.origins.find((origin) => origin.id === this.interaction!.nodeId)
+        || this.interaction.origins[0];
+      if (primary && !event.altKey) {
+        dx = Math.round((primary.x + dx) / GRID_SIZE) * GRID_SIZE - primary.x;
+        dy = Math.round((primary.y + dy) / GRID_SIZE) * GRID_SIZE - primary.y;
+      }
+      this.interaction.origins.forEach((origin) => {
         const member = this.graph.nodes.find((item) => item.id === origin.id);
         if (!member) return;
         member.x = origin.x + dx;
@@ -553,6 +642,35 @@ class CanvasView {
     }
     const card = this.card(node.id);
     if (card && node.type !== "group") this.plumbing?.revalidate(card);
+    this.positionSelectionBar();
+  }
+
+  private updateLasso(clientX: number, clientY: number) {
+    if (this.interaction?.type !== "lasso") return;
+    const rect = this.viewport().getBoundingClientRect();
+    const lasso = this.element.querySelector<HTMLElement>("[data-role='lasso']")!;
+    const left = Math.min(this.interaction.startX, clientX) - rect.left;
+    const top = Math.min(this.interaction.startY, clientY) - rect.top;
+    lasso.style.left = `${left}px`;
+    lasso.style.top = `${top}px`;
+    lasso.style.width = `${Math.abs(clientX - this.interaction.startX)}px`;
+    lasso.style.height = `${Math.abs(clientY - this.interaction.startY)}px`;
+    lasso.classList.remove("is-hidden");
+  }
+
+  private finishLasso(clientX: number, clientY: number, interaction: Extract<Interaction, { type: "lasso" }>) {
+    const rect = this.viewport().getBoundingClientRect();
+    const start = this.toWorld(interaction.startX - rect.left, interaction.startY - rect.top);
+    const end = this.toWorld(clientX - rect.left, clientY - rect.top);
+    const left = Math.min(start.x, end.x);
+    const right = Math.max(start.x, end.x);
+    const top = Math.min(start.y, end.y);
+    const bottom = Math.max(start.y, end.y);
+    const selected = this.graph.nodes
+      .filter((node) => node.x >= left && node.x + node.width <= right && node.y >= top && node.y + node.height <= bottom)
+      .map((node) => node.id);
+    const ids = interaction.additive ? [...new Set([...interaction.initial, ...selected])] : selected;
+    this.selectNodes(ids);
   }
 
   private groupMembers(group: CanvasNode) {
@@ -670,6 +788,7 @@ class CanvasView {
         height: 340,
         ...(match.type === "document" ? { docId: match.id } : { blockId: match.id }),
       };
+      this.recordHistory();
       this.graph.nodes.push(node);
       await this.appendCard(node);
       this.selectNode(node.id);
@@ -690,6 +809,7 @@ class CanvasView {
       width: 340,
       height: 250,
     };
+    this.recordHistory();
     this.graph.nodes.push(node);
     void this.appendCard(node).then(() => {
       this.selectNode(node.id);
@@ -710,6 +830,7 @@ class CanvasView {
       width: 620,
       height: 420,
     };
+    this.recordHistory();
     this.graph.nodes.unshift(node);
     void this.appendCard(node).then(() => {
       this.selectNode(node.id);
@@ -733,6 +854,7 @@ class CanvasView {
       width: 280,
       height: 180,
     };
+    this.recordHistory();
     this.graph.nodes.push(node);
     void this.appendCard(node).then(() => {
       this.selectNode(node.id);
@@ -743,34 +865,44 @@ class CanvasView {
     this.queueSave();
   }
 
-  private async duplicateSelectedNode() {
-    const source = this.graph.nodes.find((node) => node.id === this.selectedNode);
-    if (!source) return;
-    const duplicate: CanvasNode = {
-      ...source,
-      id: newId("node"),
-      x: source.x + 42,
-      y: source.y + 42,
-    };
-    this.graph.nodes.push(duplicate);
-    await this.appendCard(duplicate);
-    this.selectNode(duplicate.id);
+  private async duplicateSelectedNodes() {
+    const sources = this.graph.nodes.filter((node) => this.selectedNodes.has(node.id));
+    if (!sources.length) return;
+    this.recordHistory();
+    const ids = new Map<string, string>();
+    const duplicates = sources.map((source) => {
+      const id = newId("node");
+      ids.set(source.id, id);
+      return { ...source, id, x: source.x + 42, y: source.y + 42 };
+    });
+    const duplicateEdges = this.graph.edges
+      .filter((edge) => ids.has(edge.source) && ids.has(edge.target))
+      .map((edge) => ({ ...edge, id: newId("edge"), source: ids.get(edge.source)!, target: ids.get(edge.target)! }));
+    this.graph.nodes.push(...duplicates);
+    this.graph.edges.push(...duplicateEdges);
+    await Promise.all(duplicates.map((node) => this.appendCard(node)));
+    this.renderConnectionsFresh();
+    this.selectNodes(duplicates.map((node) => node.id));
     this.updateEmptyState();
     this.queueSave();
   }
 
-  private toggleColorMenu() {
-    this.element.querySelector("[data-role='color-menu']")?.classList.toggle("is-hidden");
+  private toggleColorMenu(fromFloating = false) {
+    const menu = this.element.querySelector<HTMLElement>("[data-role='color-menu']")!;
+    menu.classList.toggle("is-hidden");
+    menu.classList.toggle("is-floating", fromFloating && !menu.classList.contains("is-hidden"));
+    if (fromFloating) this.positionColorMenu();
   }
 
   private setSelectedColor(color: CardColor) {
     if (!CARD_COLORS.includes(color)) return;
-    const node = this.graph.nodes.find((item) => item.id === this.selectedNode);
-    if (node) {
+    if (!this.selectedNodes.size && !this.selectedEdge) return;
+    this.recordHistory();
+    this.graph.nodes.filter((item) => this.selectedNodes.has(item.id)).forEach((node) => {
       node.color = color;
       const card = this.card(node.id);
       if (card) card.dataset.color = color;
-    }
+    });
     const edge = this.graph.edges.find((item) => item.id === this.selectedEdge);
     if (edge) edge.color = color;
     this.element.querySelector("[data-role='color-menu']")?.classList.add("is-hidden");
@@ -783,13 +915,65 @@ class CanvasView {
   }
 
   private fitToSelection() {
-    const node = this.graph.nodes.find((item) => item.id === this.selectedNode);
-    if (node) this.fitNodes([node]);
+    const nodes = this.graph.nodes.filter((item) => this.selectedNodes.has(item.id));
+    if (nodes.length) this.fitNodes(nodes);
     else if (this.selectedEdge) {
       const edge = this.graph.edges.find((item) => item.id === this.selectedEdge);
       if (!edge) return;
       this.fitNodes(this.graph.nodes.filter((item) => item.id === edge.source || item.id === edge.target));
     }
+  }
+
+  private alignSelection(action: string) {
+    const nodes = this.graph.nodes.filter((node) => this.selectedNodes.has(node.id));
+    if (nodes.length < 2) return;
+    this.recordHistory();
+    const minX = Math.min(...nodes.map((node) => node.x));
+    const minY = Math.min(...nodes.map((node) => node.y));
+    const maxX = Math.max(...nodes.map((node) => node.x + node.width));
+    if (action === "align-left") nodes.forEach((node) => { node.x = minX; });
+    if (action === "align-top") nodes.forEach((node) => { node.y = minY; });
+    if (action === "align-center") {
+      const center = (minX + maxX) / 2;
+      nodes.forEach((node) => { node.x = center - node.width / 2; });
+    }
+    if (action === "distribute-horizontal" && nodes.length >= 3) {
+      const ordered = [...nodes].sort((a, b) => a.x - b.x);
+      const totalWidth = ordered.reduce((sum, node) => sum + node.width, 0);
+      const gap = Math.max(0, (maxX - minX - totalWidth) / (ordered.length - 1));
+      let x = minX;
+      ordered.forEach((node) => {
+        node.x = x;
+        x += node.width + gap;
+      });
+    }
+    nodes.forEach((node) => {
+      this.positionCard(node);
+      const card = this.card(node.id);
+      if (card && node.type !== "group") this.plumbing?.revalidate(card);
+    });
+    this.positionSelectionBar();
+    this.queueSave();
+  }
+
+  private groupSelection() {
+    const nodes = this.graph.nodes.filter((node) => this.selectedNodes.has(node.id) && node.type !== "group");
+    if (!nodes.length) return;
+    this.recordHistory();
+    const minX = Math.min(...nodes.map((node) => node.x));
+    const minY = Math.min(...nodes.map((node) => node.y));
+    const maxX = Math.max(...nodes.map((node) => node.x + node.width));
+    const maxY = Math.max(...nodes.map((node) => node.y + node.height));
+    const group: CanvasNode = {
+      id: newId("node"), type: "group", label: "Neue Gruppe", color: "default",
+      x: minX - 40, y: minY - 62, width: maxX - minX + 80, height: maxY - minY + 102,
+    };
+    this.graph.nodes.unshift(group);
+    void this.appendCard(group).then(() => {
+      this.selectNode(group.id);
+      this.card(group.id)?.querySelector<HTMLInputElement>(".syc-group-label")?.select();
+    });
+    this.queueSave();
   }
 
   private fitNodes(nodes: CanvasNode[]) {
@@ -861,6 +1045,7 @@ class CanvasView {
       textarea.setAttribute("aria-label", "Formbeschriftung");
       textarea.placeholder = "Text";
       textarea.value = node.label || "";
+      textarea.addEventListener("focus", () => this.recordHistory());
       textarea.addEventListener("input", () => {
         node.label = textarea.value;
         this.queueSave();
@@ -873,6 +1058,7 @@ class CanvasView {
       input.className = "syc-group-label";
       input.value = node.label || "Gruppe";
       input.setAttribute("aria-label", "Gruppenname");
+      input.addEventListener("focus", () => this.recordHistory());
       input.addEventListener("input", () => {
         node.label = input.value;
         this.queueSave();
@@ -887,6 +1073,7 @@ class CanvasView {
       textarea.className = "syc-text-editor";
       textarea.placeholder = "Schreibe direkt auf die Karte …";
       textarea.value = node.markdown || "";
+      textarea.addEventListener("focus", () => this.recordHistory());
       textarea.addEventListener("input", () => {
         node.markdown = textarea.value;
         this.queueSave();
@@ -926,7 +1113,9 @@ class CanvasView {
 
     card.addEventListener("click", (event) => {
       if ((event.target as HTMLElement).closest(".syc-card__menu")) return;
-      this.selectNode(node.id);
+      if ((event.target as HTMLElement).closest(".syc-card__header, .syc-resize") || node.type === "shape") return;
+      if (event.shiftKey) this.selectNode(node.id, true);
+      else if (!this.selectedNodes.has(node.id)) this.selectNode(node.id);
     });
 
     const dragHandle = card.querySelector<HTMLElement>(node.type === "shape" ? ".syc-card__body" : ".syc-card__header")!;
@@ -934,19 +1123,16 @@ class CanvasView {
       if ((event.target as HTMLElement).closest("button, input, textarea, select")) return;
       event.preventDefault();
       event.stopPropagation();
-      this.selectNode(node.id);
+      if (event.shiftKey) this.selectNode(node.id, true);
+      else if (!this.selectedNodes.has(node.id)) this.selectNode(node.id);
+      if (!this.selectedNodes.has(node.id)) return;
       this.interaction = {
         type: "move",
         nodeId: node.id,
         startX: event.clientX,
         startY: event.clientY,
-        originX: node.x,
-        originY: node.y,
-        members: node.type === "group" ? this.groupMembers(node).map((member) => ({
-          id: member.id,
-          x: member.x,
-          y: member.y,
-        })) : undefined,
+        origins: this.movementNodes().map((member) => ({ id: member.id, x: member.x, y: member.y })),
+        before: this.serializeGraph(),
       };
       this.viewport().setPointerCapture(event.pointerId);
     });
@@ -954,7 +1140,7 @@ class CanvasView {
     card.querySelector<HTMLElement>(".syc-resize")!.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      this.selectNode(node.id);
+      if (!this.selectedNodes.has(node.id)) this.selectNode(node.id);
       this.interaction = {
         type: "resize",
         nodeId: node.id,
@@ -962,6 +1148,7 @@ class CanvasView {
         startY: event.clientY,
         width: node.width,
         height: node.height,
+        before: this.serializeGraph(),
       };
       this.viewport().setPointerCapture(event.pointerId);
     });
@@ -974,8 +1161,28 @@ class CanvasView {
 
   }
 
-  private selectNode(id: string) {
-    this.selectedNode = id;
+  private movementNodes() {
+    const ids = new Set(this.selectedNodes);
+    this.graph.nodes.filter((node) => this.selectedNodes.has(node.id) && node.type === "group")
+      .forEach((group) => this.groupMembers(group).forEach((member) => ids.add(member.id)));
+    return this.graph.nodes.filter((node) => ids.has(node.id));
+  }
+
+  private selectNode(id: string, additive = false) {
+    if (additive) {
+      if (this.selectedNodes.has(id)) this.selectedNodes.delete(id);
+      else this.selectedNodes.add(id);
+    } else {
+      this.selectedNodes = new Set([id]);
+    }
+    this.selectedNode = this.selectedNodes.has(id) ? id : [...this.selectedNodes].at(-1);
+    this.selectedEdge = undefined;
+    this.refreshSelection();
+  }
+
+  private selectNodes(ids: string[]) {
+    this.selectedNodes = new Set(ids.filter((id) => this.graph.nodes.some((node) => node.id === id)));
+    this.selectedNode = [...this.selectedNodes].at(-1);
     this.selectedEdge = undefined;
     this.refreshSelection();
   }
@@ -983,12 +1190,14 @@ class CanvasView {
   private selectEdge(id: string) {
     this.selectedEdge = id;
     this.selectedNode = undefined;
+    this.selectedNodes.clear();
     this.refreshSelection();
     this.refreshConnections();
   }
 
   private clearSelection() {
     this.selectedNode = undefined;
+    this.selectedNodes.clear();
     this.selectedEdge = undefined;
     this.refreshSelection();
     this.refreshConnections();
@@ -996,22 +1205,32 @@ class CanvasView {
 
   private refreshSelection() {
     this.element.querySelectorAll<HTMLElement>(".syc-card").forEach((card) => {
-      card.classList.toggle("is-selected", card.dataset.nodeId === this.selectedNode);
+      card.classList.toggle("is-selected", this.selectedNodes.has(card.dataset.nodeId || ""));
     });
     const deleteButton = this.element.querySelector<HTMLButtonElement>("[data-action='delete']")!;
-    deleteButton.disabled = !this.selectedNode && !this.selectedEdge;
+    deleteButton.disabled = !this.selectedNodes.size && !this.selectedEdge;
     this.element.querySelectorAll<HTMLButtonElement>("[data-requires-node]").forEach((button) => {
-      button.disabled = !this.selectedNode;
+      button.disabled = !this.selectedNodes.size;
     });
     this.element.querySelectorAll<HTMLButtonElement>("[data-requires-selection]").forEach((button) => {
-      button.disabled = !this.selectedNode && !this.selectedEdge;
+      button.disabled = !this.selectedNodes.size && !this.selectedEdge;
     });
     this.element.querySelectorAll<HTMLButtonElement>("[data-requires-edge]").forEach((button) => {
       button.disabled = !this.selectedEdge;
     });
-    if (!this.selectedNode && !this.selectedEdge) {
+    this.element.querySelectorAll<HTMLButtonElement>("[data-requires-multi]").forEach((button) => {
+      button.disabled = this.selectedNodes.size < 2;
+    });
+    this.element.querySelectorAll<HTMLButtonElement>("[data-requires-three]").forEach((button) => {
+      button.disabled = this.selectedNodes.size < 3;
+    });
+    if (!this.selectedNodes.size && !this.selectedEdge) {
       this.element.querySelector("[data-role='color-menu']")?.classList.add("is-hidden");
     }
+    const bar = this.element.querySelector<HTMLElement>("[data-role='selection-bar']")!;
+    bar.classList.toggle("is-hidden", this.selectedNodes.size === 0);
+    this.element.querySelector<HTMLElement>("[data-role='selection-count']")!.textContent = `${this.selectedNodes.size} ausgewählt`;
+    this.positionSelectionBar();
     this.refreshConnections();
   }
 
@@ -1038,20 +1257,32 @@ class CanvasView {
 
   private deleteSelection() {
     if (this.selectedEdge) {
+      this.recordHistory();
+      const edgeId = this.selectedEdge;
       const connection = this.connections.get(this.selectedEdge);
+      this.syncingConnections = true;
       if (connection) this.plumbing?.deleteConnection(connection);
-      else this.graph.edges = this.graph.edges.filter((edge) => edge.id !== this.selectedEdge);
+      this.syncingConnections = false;
+      this.connections.delete(edgeId);
+      this.graph.edges = this.graph.edges.filter((edge) => edge.id !== edgeId);
       this.selectedEdge = undefined;
-    } else if (this.selectedNode) {
-      const id = this.selectedNode;
-      (this.protyles.get(id) as any)?.destroy?.();
-      this.protyles.delete(id);
-      this.graph.nodes = this.graph.nodes.filter((node) => node.id !== id);
-      this.graph.edges = this.graph.edges.filter((edge) => edge.source !== id && edge.target !== id);
-      const card = this.card(id);
-      if (card && card.hasAttribute("data-jtk-managed")) this.plumbing?.unmanage(card, true);
-      else card?.remove();
+    } else if (this.selectedNodes.size) {
+      this.recordHistory();
+      const ids = new Set(this.selectedNodes);
+      this.syncingConnections = true;
+      ids.forEach((id) => {
+        (this.protyles.get(id) as any)?.destroy?.();
+        this.protyles.delete(id);
+        const card = this.card(id);
+        if (card && card.hasAttribute("data-jtk-managed")) this.plumbing?.unmanage(card, true);
+        else card?.remove();
+      });
+      this.syncingConnections = false;
+      this.graph.nodes = this.graph.nodes.filter((node) => !ids.has(node.id));
+      this.graph.edges = this.graph.edges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target));
       this.selectedNode = undefined;
+      this.selectedNodes.clear();
+      this.renderConnectionsFresh();
     }
     this.refreshSelection();
     this.updateEmptyState();
@@ -1075,12 +1306,22 @@ class CanvasView {
     this.refreshConnections();
   }
 
+  private renderConnectionsFresh() {
+    if (!this.plumbing) return;
+    this.syncingConnections = true;
+    this.plumbing.deleteEveryConnection();
+    this.connections.clear();
+    this.syncingConnections = false;
+    this.renderConnections();
+  }
+
   private onConnectionCreated(info: { connection: Connection; sourceId: string; targetId: string }) {
     if (this.syncingConnections) return;
     const { connection } = info;
     const source = this.card(info.sourceId)?.dataset.nodeId || info.sourceId;
     const target = this.card(info.targetId)?.dataset.nodeId || info.targetId;
     if (!source || !target || source === target) return;
+    this.recordHistory();
     const edge: CanvasEdge = { id: newId("edge"), source, target, label: "", color: "default", style: "bezier", directed: true };
     connection.setParameter("edgeId", edge.id);
     this.graph.edges.push(edge);
@@ -1095,6 +1336,7 @@ class CanvasView {
     if (this.syncingConnections) return;
     const edgeId = connection.getParameter("edgeId") as string;
     if (!edgeId) return;
+    this.recordHistory();
     this.connections.delete(edgeId);
     this.graph.edges = this.graph.edges.filter((edge) => edge.id !== edgeId);
     if (this.selectedEdge === edgeId) this.selectedEdge = undefined;
@@ -1133,8 +1375,21 @@ class CanvasView {
     this.refreshSelection();
     this.element.querySelector<HTMLElement>("[data-role='edge-dialog']")!.classList.remove("is-hidden");
     const input = this.element.querySelector<HTMLInputElement>("[data-role='edge-label']")!;
+    const source = this.element.querySelector<HTMLSelectElement>("[data-role='edge-source']")!;
+    const target = this.element.querySelector<HTMLSelectElement>("[data-role='edge-target']")!;
     const style = this.element.querySelector<HTMLSelectElement>("[data-role='edge-style']")!;
+    source.innerHTML = "";
+    target.innerHTML = "";
+    this.graph.nodes.filter((node) => node.type !== "group").forEach((node) => {
+      const sourceOption = document.createElement("option");
+      sourceOption.value = node.id;
+      sourceOption.textContent = this.nodeDisplayName(node);
+      source.append(sourceOption);
+      target.append(sourceOption.cloneNode(true));
+    });
     input.value = edge.label || "";
+    source.value = edge.source;
+    target.value = edge.target;
     style.value = edge.style || "bezier";
     window.setTimeout(() => input.focus(), 0);
   }
@@ -1146,13 +1401,24 @@ class CanvasView {
   private saveEdgeLabel() {
     const edge = this.graph.edges.find((item) => item.id === this.selectedEdge);
     if (!edge) return this.closeEdgeDialog();
+    const source = this.element.querySelector<HTMLSelectElement>("[data-role='edge-source']")!.value;
+    const target = this.element.querySelector<HTMLSelectElement>("[data-role='edge-target']")!.value;
+    if (!source || !target || source === target) {
+      showMessage("Quelle und Ziel müssen unterschiedliche Karten sein.");
+      return;
+    }
+    this.recordHistory();
     edge.label = this.element.querySelector<HTMLInputElement>("[data-role='edge-label']")!.value.trim();
     edge.style = this.element.querySelector<HTMLSelectElement>("[data-role='edge-style']")!.value as EdgeStyle;
+    const endpointsChanged = edge.source !== source || edge.target !== target;
+    edge.source = source;
+    edge.target = target;
     const connection = this.connections.get(edge.id);
     connection?.setLabel(edge.label);
     if (connection) this.plumbing?.select({ connections: [connection] }).setConnector(this.edgeConnector(edge.style));
     if (connection) this.plumbing?.revalidate(connection.source);
     this.plumbing?.repaintEverything();
+    if (endpointsChanged) this.renderConnectionsFresh();
     this.closeEdgeDialog();
     this.queueSave();
   }
@@ -1172,6 +1438,7 @@ class CanvasView {
     this.world().style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.scale})`;
     this.element.querySelector<HTMLElement>(".syc-zoom")!.textContent = `${Math.round(this.scale * 100)}%`;
     this.plumbing?.setZoom(this.scale, true);
+    this.positionSelectionBar();
   }
 
   private positionCard(node: CanvasNode) {
@@ -1200,6 +1467,99 @@ class CanvasView {
 
   private toWorld(x: number, y: number): Point {
     return { x: (x - this.pan.x) / this.scale, y: (y - this.pan.y) / this.scale };
+  }
+
+  private serializeGraph() {
+    return JSON.stringify(this.graph);
+  }
+
+  private recordHistory() {
+    this.pushHistorySnapshot(this.serializeGraph());
+  }
+
+  private commitHistorySnapshot(before: string) {
+    if (before !== this.serializeGraph()) this.pushHistorySnapshot(before);
+  }
+
+  private pushHistorySnapshot(snapshot: string) {
+    if (this.undoStack.at(-1) !== snapshot) {
+      this.undoStack.push(snapshot);
+      if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+    }
+    this.redoStack = [];
+    this.refreshHistoryButtons();
+  }
+
+  private async undo() {
+    const current = this.serializeGraph();
+    let snapshot = this.undoStack.pop();
+    while (snapshot === current) snapshot = this.undoStack.pop();
+    if (!snapshot) {
+      this.refreshHistoryButtons();
+      return;
+    }
+    this.redoStack.push(current);
+    await this.restoreSnapshot(snapshot);
+  }
+
+  private async redo() {
+    const current = this.serializeGraph();
+    let snapshot = this.redoStack.pop();
+    while (snapshot === current) snapshot = this.redoStack.pop();
+    if (!snapshot) {
+      this.refreshHistoryButtons();
+      return;
+    }
+    this.undoStack.push(current);
+    await this.restoreSnapshot(snapshot);
+  }
+
+  private async restoreSnapshot(snapshot: string) {
+    this.graph = JSON.parse(snapshot) as CanvasGraph;
+    this.clearSelection();
+    this.element.querySelector<HTMLInputElement>("[data-role='canvas-name']")!.value = this.graph.name;
+    await this.renderNodes();
+    this.updateEmptyState();
+    this.refreshHistoryButtons();
+    await this.save(false);
+  }
+
+  private refreshHistoryButtons() {
+    const undo = this.element.querySelector<HTMLButtonElement>("[data-role='undo']");
+    const redo = this.element.querySelector<HTMLButtonElement>("[data-role='redo']");
+    if (undo) undo.disabled = this.undoStack.length === 0;
+    if (redo) redo.disabled = this.redoStack.length === 0;
+  }
+
+  private positionSelectionBar() {
+    const bar = this.element.querySelector<HTMLElement>("[data-role='selection-bar']");
+    if (!bar || !this.selectedNodes.size) return;
+    const nodes = this.graph.nodes.filter((node) => this.selectedNodes.has(node.id));
+    if (!nodes.length) return;
+    const minX = Math.min(...nodes.map((node) => node.x));
+    const minY = Math.min(...nodes.map((node) => node.y));
+    const maxX = Math.max(...nodes.map((node) => node.x + node.width));
+    const viewport = this.viewport();
+    const left = this.pan.x + ((minX + maxX) / 2) * this.scale;
+    const top = viewport.offsetTop + this.pan.y + minY * this.scale;
+    bar.style.left = `${Math.max(100, Math.min(viewport.clientWidth - 100, left))}px`;
+    bar.style.top = `${Math.max(viewport.offsetTop + 10, top)}px`;
+  }
+
+  private positionColorMenu() {
+    const menu = this.element.querySelector<HTMLElement>("[data-role='color-menu']");
+    const bar = this.element.querySelector<HTMLElement>("[data-role='selection-bar']");
+    if (!menu || !bar || menu.classList.contains("is-hidden")) return;
+    menu.style.left = `${Math.max(8, bar.offsetLeft - menu.offsetWidth / 2)}px`;
+    menu.style.top = `${Math.max(50, bar.offsetTop + 6)}px`;
+  }
+
+  private nodeDisplayName(node: CanvasNode) {
+    const visible = this.card(node.id)?.querySelector<HTMLElement>(".syc-card__title")?.textContent?.trim();
+    if (visible) return visible;
+    if (node.type === "shape" || node.type === "group") return node.label || "Unbenannt";
+    if (node.type === "text") return (node.markdown || "Textkarte").slice(0, 48);
+    return node.type === "document" ? `Dokument ${node.docId || ""}` : `Block ${node.blockId || ""}`;
   }
 
   private queueSave() {

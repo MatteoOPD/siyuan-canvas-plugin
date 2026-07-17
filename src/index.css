@@ -110,7 +110,9 @@
   transform: translateY(1px);
 }
 
-.syc-button:disabled {
+.syc-button:disabled,
+.syc-icon-button:disabled,
+.syc-zoom:disabled {
   cursor: default;
   opacity: 0.4;
 }
@@ -140,6 +142,17 @@
   background-image: radial-gradient(color-mix(in srgb, var(--b3-theme-on-background) 14%, transparent) 1px, transparent 1px);
   background-size: 22px 22px;
 }
+
+.syc-lasso {
+  position: absolute;
+  z-index: 20;
+  box-sizing: border-box;
+  border: 1px solid var(--syc-accent);
+  background: color-mix(in srgb, var(--syc-accent) 14%, transparent);
+  pointer-events: none;
+}
+
+.syc-lasso.is-hidden { display: none; }
 
 .syc-world {
   position: absolute;
@@ -226,7 +239,11 @@
   border-style: dashed;
   background: color-mix(in srgb, var(--syc-card-tint) 7%, transparent);
   box-shadow: none;
+  pointer-events: none;
 }
+
+.syc-card--group .syc-card__header,
+.syc-card--group .syc-resize { pointer-events: auto; }
 
 .syc-card--group .syc-card__body {
   pointer-events: none;
@@ -563,6 +580,10 @@
 .syc-color-menu.is-hidden,
 .syc-shape-menu.is-hidden { display: none; }
 
+.syc-color-menu.is-floating {
+  position: absolute;
+}
+
 .syc-color-swatch {
   width: 22px;
   height: 22px;
@@ -677,6 +698,48 @@
 .syc-search-result small { overflow: hidden; color: var(--b3-theme-on-surface-light); text-overflow: ellipsis; white-space: nowrap; }
 .syc-dialog__footer { padding: 8px 12px; border-top: 1px solid var(--syc-border); color: var(--b3-theme-on-surface-light); font-size: 11px; text-align: center; }
 .syc-dialog__actions { display: flex; justify-content: flex-end; gap: 7px; padding: 0 12px 12px; }
+
+.syc-selection-bar {
+  position: absolute;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--syc-border);
+  border-radius: 9px;
+  background: var(--b3-theme-surface);
+  box-shadow: var(--syc-shadow);
+  transform: translate(-50%, -100%);
+}
+
+.syc-selection-bar.is-hidden { display: none; }
+
+.syc-selection-bar > span {
+  padding: 0 7px;
+  color: var(--b3-theme-on-surface-light);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.syc-selection-bar button {
+  min-width: 28px;
+  height: 28px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--b3-theme-on-surface);
+  cursor: pointer;
+  font: inherit;
+}
+
+.syc-selection-bar button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--syc-accent) 13%, transparent);
+}
+
+.syc-selection-bar button:disabled { opacity: 0.3; cursor: default; }
+.syc-selection-bar button.is-danger { color: var(--b3-card-error-color); }
 
 .syc-empty {
   position: absolute;
