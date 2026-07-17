@@ -699,20 +699,21 @@ class CanvasView {
     this.queueSave();
   }
 
-  private addGroupNode(position = this.nextPosition()) {
+  private addGroupNode(position = this.nextGroupPosition()) {
     const node: CanvasNode = {
       id: newId("node"),
       type: "group",
       label: "Neue Gruppe",
       color: "default",
-      x: position.x - 100,
-      y: position.y - 80,
+      x: position.x,
+      y: position.y,
       width: 620,
       height: 420,
     };
     this.graph.nodes.unshift(node);
     void this.appendCard(node).then(() => {
       this.selectNode(node.id);
+      this.fitToSelection();
       this.card(node.id)?.querySelector<HTMLInputElement>(".syc-group-label")?.select();
     });
     this.updateEmptyState();
@@ -1186,6 +1187,15 @@ class CanvasView {
     const offset = (this.graph.nodes.length % 7) * 28;
     const center = this.toWorld(this.viewport().clientWidth / 2, this.viewport().clientHeight / 2);
     return { x: center.x - 180 + offset, y: center.y - 130 + offset };
+  }
+
+  private nextGroupPosition(): Point {
+    const latestGroup = this.graph.nodes.find((node) => node.type === "group");
+    if (latestGroup) {
+      return { x: latestGroup.x + latestGroup.width + 60, y: latestGroup.y };
+    }
+    const position = this.nextPosition();
+    return { x: position.x - 100, y: position.y - 80 };
   }
 
   private toWorld(x: number, y: number): Point {
