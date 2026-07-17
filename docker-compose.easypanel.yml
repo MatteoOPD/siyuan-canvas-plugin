@@ -2,19 +2,37 @@ services:
   canvas-installer:
     image: alpine:3.20
     environment:
-      PLUGIN_URL: https://github.com/MatteoOPD/siyuan-canvas-plugin/releases/download/v0.4.0/package.zip
+      PLUGIN_URL: https://github.com/MatteoOPD/siyuan-canvas-plugin/releases/latest/download/package.zip
+      CHECK_INTERVAL: "300"
     volumes:
       - siyuan_data:/workspace
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
         apk add --no-cache curl unzip
-        mkdir -p /workspace/data/plugins/siyuan-canvas
-        curl -fsSL "$${PLUGIN_URL}" -o /tmp/siyuan-canvas.zip
-        unzip -oq /tmp/siyuan-canvas.zip -d /workspace/data/plugins/siyuan-canvas
-        chown -R 1000:1000 /workspace/data/plugins/siyuan-canvas
-        echo "SiYuan Canvas wurde erfolgreich installiert."
-    restart: "no"
+        target=/workspace/data/plugins/siyuan-canvas
+        mkdir -p "$${target}"
+        while true; do
+          rm -rf /tmp/siyuan-canvas-next
+          mkdir -p /tmp/siyuan-canvas-next
+          if curl -fsSL "$${PLUGIN_URL}" -o /tmp/siyuan-canvas.zip &&
+             unzip -oq /tmp/siyuan-canvas.zip -d /tmp/siyuan-canvas-next
+          then
+            next="$$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/siyuan-canvas-next/plugin.json | head -n1)"
+            current="$$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$${target}/plugin.json" 2>/dev/null | head -n1)"
+            if [ -n "$${next}" ] && [ "$${next}" != "$${current}" ]; then
+              cp -a /tmp/siyuan-canvas-next/. "$${target}/"
+              chown -R 1000:1000 "$${target}"
+              echo "SiYuan Canvas $${current:-nicht installiert} -> $${next} aktualisiert. SiYuan jetzt neu starten."
+            else
+              echo "SiYuan Canvas ist aktuell: $${current:-unbekannt}"
+            fi
+          else
+            echo "Canvas-Updateprüfung fehlgeschlagen; erneuter Versuch folgt."
+          fi
+          sleep "$${CHECK_INTERVAL}"
+        done
+    restart: unless-stopped
 
 volumes:
   siyuan_data:

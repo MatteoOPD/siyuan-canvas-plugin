@@ -11,8 +11,10 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - Dokumente und Blöcke direkt in der Karte wie in SiYuan bearbeiten.
 - Über einer Karte scrollt das Mausrad deren Inhalt; `Strg`/`Cmd` + Mausrad zoomt weiterhin den Canvas.
 - Zum Verbinden einen Anschluss-Punkt am Kartenrand auf die Zielkarte ziehen. `Verbinden` blendet die Punkte dauerhaft ein.
-- Ausgewählte Karten lassen sich duplizieren und durch mehrere Whiteboard-Farben schalten.
-- `⛶` passt alle Karten in die sichtbare Arbeitsfläche ein.
+- Ausgewählte Karten und Pfeile erhalten ihre Farbe über eine sichtbare Palette.
+- Gruppen bilden beschriftete Bereiche; beim Verschieben einer Gruppe bewegen sich enthaltene Karten mit.
+- Ausgewählte Karten lassen sich duplizieren; ein Doppelklick auf freie Fläche erstellt eine Textkarte.
+- `⛶` passt alle Karten ein, `▣` zoomt auf die aktuelle Karte beziehungsweise Verbindung (`Shift+1`/`Shift+2`).
 - Kante doppelt anklicken, um ihre Beschriftung zu ändern; Kante auswählen und mit `Entf` löschen.
 - Mausrad zoomt zum Mauszeiger; Ziehen auf freier Fläche verschiebt den Canvas.
 
@@ -28,7 +30,7 @@ Gespeichert werden Position, Größe und Farbe der Karten, freie Textkarten sowi
 
 Der vorhandene SiYuan-Compose bleibt unverändert. Lege in EasyPanel einen zweiten Compose-Service für den Canvas an und verwende dafür [docker-compose.easypanel.yml](docker-compose.easypanel.yml).
 
-Der Installer bindet das bestehende Volume `prod_siyuan_siyuan_data` als externes Volume ein, lädt die Release-ZIP hinein und beendet sich anschließend erfolgreich. Nach einem Canvas-Deploy muss nur der bestehende SiYuan-Service einmal über EasyPanel neu gestartet werden. Ein manueller `docker run` ist nicht mehr nötig.
+Der Installer bindet das bestehende Volume `prod_siyuan_siyuan_data` als externes Volume ein und prüft dauerhaft `releases/latest`. Eine neue Version wird automatisch in das Volume kopiert. Sobald das Installer-Log die neue Version meldet, genügt ein Neustart des bestehenden SiYuan-Service; ein manueller `docker run` ist nicht mehr nötig.
 
 Falls dein EasyPanel-Projekt einen anderen Docker-Volumenamen verwendet, passe ausschließlich `volumes.siyuan_data.name` an.
 
