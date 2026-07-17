@@ -4,9 +4,12 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 
 ## Bedienung
 
+- Jeder Canvas erhält beim Anlegen einen Namen; der Name kann oben in der Werkzeugleiste geändert werden.
 - `+ Referenz`: Öffnet eine integrierte Suche für Dokumente und Blöcke (Tastatur: Pfeile und Enter).
+- Dokumentkarten sind blau mit Seitensymbol, Blockkarten violett mit Absatzsymbol gekennzeichnet.
 - Dokumente aus dem Dateibaum und einzelne Blöcke lassen sich direkt auf die Fläche ziehen; auch mehrere IDs in einem Drop werden übernommen.
 - `+ Text`: freie, nur im Canvas gespeicherte Textkarte erstellen.
+- `Form`: Rechteck, Ellipse oder Raute mit frei editierbarer Beschriftung erstellen.
 - Karten am Kopf verschieben und an der rechten unteren Ecke skalieren.
 - Dokumente und Blöcke direkt in der Karte wie in SiYuan bearbeiten.
 - Über einer Karte scrollt das Mausrad deren Inhalt; `Strg`/`Cmd` + Mausrad zoomt weiterhin den Canvas.
@@ -15,7 +18,7 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - Gruppen bilden beschriftete Bereiche; beim Verschieben einer Gruppe bewegen sich enthaltene Karten mit.
 - Ausgewählte Karten lassen sich duplizieren; ein Doppelklick auf freie Fläche erstellt eine Textkarte.
 - `⛶` passt alle Karten ein, `▣` zoomt auf die aktuelle Karte beziehungsweise Verbindung (`Shift+1`/`Shift+2`).
-- Kante doppelt anklicken, um ihre Beschriftung zu ändern; Kante auswählen und mit `Entf` löschen.
+- Pfeil anklicken und `Pfeil` wählen (oder doppelt anklicken), um Beschriftung und Linienform – gebogen, gerade oder rechtwinklig – zu ändern. Mit `Entf` wird der ausgewählte Pfeil gelöscht.
 - Mausrad zoomt zum Mauszeiger; Ziehen auf freier Fläche verschiebt den Canvas.
 
 Der Canvas speichert nur Layout, Textkarten und Verbindungen. SiYuan bleibt für Dokument- und Blockinhalte die Quelle der Wahrheit.
@@ -24,7 +27,7 @@ Der Canvas speichert nur Layout, Textkarten und Verbindungen. SiYuan bleibt für
 
 Die Graph-Dateien liegen über die SiYuan-Datei-API unter `/data/storage/petal/siyuan-canvas/`. Jeder Canvas besitzt dort eine `<canvasId>.json`; `index.json` enthält die Liste der vorhandenen Canvas-Dateien. Im Docker-Container entspricht das dem Pfad `/siyuan/workspace/data/storage/petal/siyuan-canvas/` und liegt damit im bestehenden SiYuan-Volume.
 
-Gespeichert werden Position, Größe und Farbe der Karten, freie Textkarten sowie Verbindungen und Pfeiltexte. Inhalte referenzierter Dokumente und Blöcke werden nicht kopiert, sondern weiterhin direkt aus SiYuan geladen und dort bearbeitet.
+Gespeichert werden Canvas-Name, Position, Größe und Farbe der Karten, freie Textkarten, Formen sowie Verbindungen, Pfeiltexte und Linienformen. Inhalte referenzierter Dokumente und Blöcke werden nicht kopiert, sondern weiterhin direkt aus SiYuan geladen und dort bearbeitet.
 
 ## EasyPanel: separater Canvas-Installer
 

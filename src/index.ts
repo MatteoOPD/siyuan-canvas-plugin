@@ -9,8 +9,10 @@ import {
 } from "@jsplumb/browser-ui";
 import "./index.css";
 
-type NodeKind = "document" | "block" | "text" | "group";
+type NodeKind = "document" | "block" | "text" | "group" | "shape";
 type CardColor = "default" | "red" | "orange" | "yellow" | "green" | "cyan" | "blue" | "pink" | "purple";
+type ShapeKind = "rectangle" | "ellipse" | "diamond";
+type EdgeStyle = "bezier" | "straight" | "orthogonal";
 
 interface CanvasNode {
   id: string;
@@ -19,6 +21,7 @@ interface CanvasNode {
   blockId?: string;
   markdown?: string;
   label?: string;
+  shape?: ShapeKind;
   color?: CardColor;
   x: number;
   y: number;
@@ -32,11 +35,13 @@ interface CanvasEdge {
   target: string;
   label?: string;
   color?: CardColor;
+  style?: EdgeStyle;
   directed: true;
 }
 
 interface CanvasGraph {
   canvasId: string;
+  name: string;
   schemaVersion: 1;
   nodes: CanvasNode[];
   edges: CanvasEdge[];
@@ -44,6 +49,7 @@ interface CanvasGraph {
 
 interface CanvasIndexEntry {
   id: string;
+  name?: string;
   updatedAt: string;
 }
 
@@ -83,8 +89,9 @@ const COLOR_VALUES: Record<CardColor, string> = {
 const newId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-const emptyGraph = (canvasId: string): CanvasGraph => ({
+const emptyGraph = (canvasId: string, name = "Unbenannter Canvas"): CanvasGraph => ({
   canvasId,
+  name,
   schemaVersion: 1,
   nodes: [],
   edges: [],
@@ -158,7 +165,7 @@ class GraphStore {
     await ensureStorage();
     await putJson(`${STORAGE_ROOT}/${graph.canvasId}.json`, graph);
     const previous = await this.list();
-    const entry = { id: graph.canvasId, updatedAt: new Date().toISOString() };
+    const entry = { id: graph.canvasId, name: graph.name, updatedAt: new Date().toISOString() };
     await putJson(`${STORAGE_ROOT}/index.json`, [
       entry,
       ...previous.filter((item) => item.id !== graph.canvasId),
@@ -238,19 +245,24 @@ class CanvasView {
     private element: HTMLElement,
     private canvasId: string,
     private store: GraphStore,
+    private initialName = "Unbenannter Canvas",
   ) {
-    this.graph = emptyGraph(canvasId);
+    this.graph = emptyGraph(canvasId, initialName);
   }
 
   async init() {
     this.mount();
     try {
-      this.graph = (await this.store.load(this.canvasId)) || emptyGraph(this.canvasId);
+      const stored = await this.store.load(this.canvasId);
+      this.graph = stored || emptyGraph(this.canvasId, this.initialName);
+      this.graph.name ||= this.initialName;
+      if (!stored) await this.store.save(this.graph);
     } catch (error) {
       showMessage(`Canvas-Speicher nicht erreichbar: ${String(error)}`);
     }
     this.setupConnections();
     this.bindGlobalEvents();
+    this.element.querySelector<HTMLInputElement>("[data-role='canvas-name']")!.value = this.graph.name;
     await this.renderNodes();
     this.updateTransform();
     this.updateEmptyState();
@@ -264,11 +276,14 @@ class CanvasView {
           <button class="syc-button syc-button--primary" data-action="reference">＋ Referenz</button>
           <button class="syc-button" data-action="text">＋ Text</button>
           <button class="syc-button" data-action="group">▣ Gruppe</button>
+          <button class="syc-button" data-action="shape">◇ Form</button>
           <button class="syc-button" data-action="link">↗ Verbinden</button>
+          <button class="syc-button" data-action="edit-edge" data-requires-edge disabled>✎ Pfeil</button>
           <button class="syc-button" data-action="duplicate" data-requires-node disabled>⧉ Duplizieren</button>
           <button class="syc-button" data-action="color" data-requires-selection disabled>● Farbe</button>
           <button class="syc-button syc-button--danger" data-action="delete" disabled>⌫ Löschen</button>
         </div>
+        <input class="syc-canvas-name" data-role="canvas-name" maxlength="80" aria-label="Canvas-Name" value="Unbenannter Canvas">
         <div class="syc-toolbar__status" data-role="status">Bereit</div>
         <div class="syc-toolbar__group syc-toolbar__group--right">
           <button class="syc-icon-button" data-action="fit" title="Alle Karten einpassen">⛶</button>
@@ -281,6 +296,11 @@ class CanvasView {
       </div>
       <div class="syc-color-menu is-hidden" data-role="color-menu" aria-label="Farbe wählen">
         ${CARD_COLORS.map((color) => `<button class="syc-color-swatch syc-color-swatch--${color}" data-action="set-color" data-color="${color}" title="${color}"></button>`).join("")}
+      </div>
+      <div class="syc-shape-menu is-hidden" data-role="shape-menu" aria-label="Form hinzufügen">
+        <button data-action="add-shape" data-shape="rectangle">▭ Rechteck</button>
+        <button data-action="add-shape" data-shape="ellipse">◯ Ellipse</button>
+        <button data-action="add-shape" data-shape="diamond">◇ Raute</button>
       </div>
       <div class="syc-viewport">
         <div class="syc-world"></div>
@@ -301,8 +321,9 @@ class CanvasView {
       </div>
       <div class="syc-dialog-backdrop is-hidden" data-role="edge-dialog">
         <form class="syc-dialog syc-dialog--small" data-role="edge-form">
-          <header class="syc-dialog__header"><strong>Pfeil beschriften</strong><button type="button" class="syc-dialog__close" data-action="close-edge">×</button></header>
+          <header class="syc-dialog__header"><strong>Pfeil bearbeiten</strong><button type="button" class="syc-dialog__close" data-action="close-edge">×</button></header>
           <input class="syc-search" data-role="edge-label" maxlength="80" placeholder="Beschriftung (optional)">
+          <label class="syc-field"><span>Linienform</span><select data-role="edge-style"><option value="bezier">Gebogen</option><option value="straight">Gerade</option><option value="orthogonal">Rechtwinklig</option></select></label>
           <div class="syc-dialog__actions"><button type="button" class="syc-button" data-action="close-edge">Abbrechen</button><button class="syc-button syc-button--primary" type="submit">Übernehmen</button></div>
         </form>
       </div>`;
@@ -434,6 +455,10 @@ class CanvasView {
       this.searchTimer = window.setTimeout(() => void this.renderSearchResults(input.value), 180);
     });
     input.addEventListener("keydown", (event) => this.onSearchKeydown(event));
+    this.element.querySelector<HTMLInputElement>("[data-role='canvas-name']")!.addEventListener("input", (event) => {
+      this.graph.name = (event.target as HTMLInputElement).value.trim() || "Unbenannter Canvas";
+      this.queueSave();
+    });
     this.element.querySelector<HTMLFormElement>("[data-role='edge-form']")!.addEventListener("submit", (event) => {
       event.preventDefault();
       this.saveEdgeLabel();
@@ -456,6 +481,12 @@ class CanvasView {
       this.addTextNode();
     } else if (action === "group") {
       this.addGroupNode();
+    } else if (action === "shape") {
+      this.element.querySelector("[data-role='shape-menu']")?.classList.toggle("is-hidden");
+    } else if (action === "add-shape") {
+      this.addShapeNode((trigger?.dataset.shape || "rectangle") as ShapeKind);
+    } else if (action === "edit-edge") {
+      if (this.selectedEdge) this.openEdgeDialog(this.selectedEdge);
     } else if (action === "link") {
       this.toggleLinkMode();
     } else if (action === "duplicate") {
@@ -513,8 +544,10 @@ class CanvasView {
         if (memberCard) this.plumbing?.revalidate(memberCard);
       });
     } else {
-      node.width = Math.max(280, this.interaction.width + (event.clientX - this.interaction.startX) / this.scale);
-      node.height = Math.max(220, this.interaction.height + (event.clientY - this.interaction.startY) / this.scale);
+      const minWidth = node.type === "shape" ? 120 : 280;
+      const minHeight = node.type === "shape" ? 90 : 220;
+      node.width = Math.max(minWidth, this.interaction.width + (event.clientX - this.interaction.startX) / this.scale);
+      node.height = Math.max(minHeight, this.interaction.height + (event.clientY - this.interaction.startY) / this.scale);
       this.positionCard(node);
       (this.protyles.get(node.id) as any)?.resize?.();
     }
@@ -565,8 +598,8 @@ class CanvasView {
         button.dataset.index = String(index);
         button.classList.toggle("is-active", index === this.searchIndex);
         const icon = document.createElement("span");
-        icon.className = "syc-search-result__icon";
-        icon.textContent = result.type === "document" ? "▤" : "▦";
+        icon.className = `syc-search-result__icon syc-search-result__icon--${result.type}`;
+        icon.textContent = result.type === "document" ? "▤" : "¶";
         const text = document.createElement("span");
         const title = document.createElement("strong");
         title.textContent = result.content;
@@ -686,6 +719,29 @@ class CanvasView {
     this.queueSave();
   }
 
+  private addShapeNode(shape: ShapeKind, position = this.nextPosition()) {
+    if (!["rectangle", "ellipse", "diamond"].includes(shape)) return;
+    const node: CanvasNode = {
+      id: newId("node"),
+      type: "shape",
+      shape,
+      label: shape === "rectangle" ? "Rechteck" : shape === "ellipse" ? "Ellipse" : "Raute",
+      color: "blue",
+      x: position.x,
+      y: position.y,
+      width: 280,
+      height: 180,
+    };
+    this.graph.nodes.push(node);
+    void this.appendCard(node).then(() => {
+      this.selectNode(node.id);
+      this.card(node.id)?.querySelector<HTMLTextAreaElement>(".syc-shape-editor")?.select();
+    });
+    this.element.querySelector("[data-role='shape-menu']")?.classList.add("is-hidden");
+    this.updateEmptyState();
+    this.queueSave();
+  }
+
   private async duplicateSelectedNode() {
     const source = this.graph.nodes.find((node) => node.id === this.selectedNode);
     if (!source) return;
@@ -773,9 +829,10 @@ class CanvasView {
     card.id = node.id;
     card.dataset.nodeId = node.id;
     card.dataset.color = node.color || "default";
+    if (node.type === "shape") card.dataset.shape = node.shape || "rectangle";
     card.innerHTML = `
       <header class="syc-card__header">
-        <span class="syc-card__kind">${node.type === "document" ? "▤ Dokument" : node.type === "block" ? "▦ Block" : node.type === "group" ? "▣ Gruppe" : "✎ Text"}</span>
+        <span class="syc-card__kind">${node.type === "document" ? "▤ Dokument" : node.type === "block" ? "¶ Block" : node.type === "group" ? "▣ Gruppe" : node.type === "shape" ? "◇ Form" : "✎ Text"}</span>
         <strong class="syc-card__title"></strong>
         <button class="syc-card__menu" title="Karte löschen">×</button>
       </header>
@@ -794,7 +851,21 @@ class CanvasView {
     const body = card.querySelector<HTMLElement>(".syc-card__body")!;
     const footer = card.querySelector<HTMLElement>(".syc-card__footer span")!;
 
-    if (node.type === "group") {
+    if (node.type === "shape") {
+      title.textContent = "Form";
+      footer.textContent = node.shape === "ellipse" ? "Ellipse" : node.shape === "diamond" ? "Raute" : "Rechteck";
+      body.classList.add("syc-shape-body");
+      const textarea = document.createElement("textarea");
+      textarea.className = "syc-shape-editor";
+      textarea.setAttribute("aria-label", "Formbeschriftung");
+      textarea.placeholder = "Text";
+      textarea.value = node.label || "";
+      textarea.addEventListener("input", () => {
+        node.label = textarea.value;
+        this.queueSave();
+      });
+      body.append(textarea);
+    } else if (node.type === "group") {
       card.classList.add("syc-group");
       title.remove();
       const input = document.createElement("input");
@@ -857,8 +928,9 @@ class CanvasView {
       this.selectNode(node.id);
     });
 
-    card.querySelector<HTMLElement>(".syc-card__header")!.addEventListener("pointerdown", (event) => {
-      if ((event.target as HTMLElement).closest("button, input")) return;
+    const dragHandle = card.querySelector<HTMLElement>(node.type === "shape" ? ".syc-card__body" : ".syc-card__header")!;
+    dragHandle.addEventListener("pointerdown", (event) => {
+      if ((event.target as HTMLElement).closest("button, input, textarea, select")) return;
       event.preventDefault();
       event.stopPropagation();
       this.selectNode(node.id);
@@ -933,6 +1005,9 @@ class CanvasView {
     this.element.querySelectorAll<HTMLButtonElement>("[data-requires-selection]").forEach((button) => {
       button.disabled = !this.selectedNode && !this.selectedEdge;
     });
+    this.element.querySelectorAll<HTMLButtonElement>("[data-requires-edge]").forEach((button) => {
+      button.disabled = !this.selectedEdge;
+    });
     if (!this.selectedNode && !this.selectedEdge) {
       this.element.querySelector("[data-role='color-menu']")?.classList.add("is-hidden");
     }
@@ -989,7 +1064,7 @@ class CanvasView {
       const source = this.card(edge.source);
       const target = this.card(edge.target);
       if (!source || !target) continue;
-      const connection = this.plumbing.connect({ source, target });
+      const connection = this.plumbing.connect({ source, target, connector: this.edgeConnector(edge.style) });
       if (!connection) continue;
       connection.setParameter("edgeId", edge.id);
       connection.setLabel(edge.label || "");
@@ -1005,7 +1080,7 @@ class CanvasView {
     const source = this.card(info.sourceId)?.dataset.nodeId || info.sourceId;
     const target = this.card(info.targetId)?.dataset.nodeId || info.targetId;
     if (!source || !target || source === target) return;
-    const edge: CanvasEdge = { id: newId("edge"), source, target, label: "", color: "default", directed: true };
+    const edge: CanvasEdge = { id: newId("edge"), source, target, label: "", color: "default", style: "bezier", directed: true };
     connection.setParameter("edgeId", edge.id);
     this.graph.edges.push(edge);
     this.connections.set(edge.id, connection);
@@ -1033,10 +1108,21 @@ class CanvasView {
       const stroke = COLOR_VALUES[color]
         || getComputedStyle(this.element).getPropertyValue("--syc-accent").trim()
         || "#888";
-      connection.setPaintStyle({ stroke, strokeWidth: id === this.selectedEdge ? 3 : 2 });
+      connection.setPaintStyle({
+        stroke,
+        strokeWidth: id === this.selectedEdge ? 3 : 2,
+        outlineStroke: "transparent",
+        outlineWidth: 8,
+      });
       connection.removeClass("syc-connection-selected");
       if (id === this.selectedEdge) connection.addClass("syc-connection-selected");
     });
+  }
+
+  private edgeConnector(style: EdgeStyle = "bezier") {
+    if (style === "straight") return { type: "Straight", options: {} } as const;
+    if (style === "orthogonal") return { type: "Flowchart", options: { cornerRadius: 8, stub: 24 } } as const;
+    return { type: "Bezier", options: { curviness: 72 } } as const;
   }
 
   private openEdgeDialog(edgeId: string) {
@@ -1046,7 +1132,9 @@ class CanvasView {
     this.refreshSelection();
     this.element.querySelector<HTMLElement>("[data-role='edge-dialog']")!.classList.remove("is-hidden");
     const input = this.element.querySelector<HTMLInputElement>("[data-role='edge-label']")!;
+    const style = this.element.querySelector<HTMLSelectElement>("[data-role='edge-style']")!;
     input.value = edge.label || "";
+    style.value = edge.style || "bezier";
     window.setTimeout(() => input.focus(), 0);
   }
 
@@ -1058,7 +1146,12 @@ class CanvasView {
     const edge = this.graph.edges.find((item) => item.id === this.selectedEdge);
     if (!edge) return this.closeEdgeDialog();
     edge.label = this.element.querySelector<HTMLInputElement>("[data-role='edge-label']")!.value.trim();
-    this.connections.get(edge.id)?.setLabel(edge.label);
+    edge.style = this.element.querySelector<HTMLSelectElement>("[data-role='edge-style']")!.value as EdgeStyle;
+    const connection = this.connections.get(edge.id);
+    connection?.setLabel(edge.label);
+    if (connection) this.plumbing?.select({ connections: [connection] }).setConnector(this.edgeConnector(edge.style));
+    if (connection) this.plumbing?.revalidate(connection.source);
+    this.plumbing?.repaintEverything();
     this.closeEdgeDialog();
     this.queueSave();
   }
@@ -1155,7 +1248,8 @@ export default class SiYuanCanvas extends Plugin {
       type: this.tabType,
       init(this: any) {
         const canvasId = this.data?.canvasId || `canvas-${Date.now()}`;
-        new CanvasView(plugin.app, this.element, canvasId, plugin.store).init().catch((error) => {
+        const canvasName = this.data?.canvasName || "Unbenannter Canvas";
+        new CanvasView(plugin.app, this.element, canvasId, plugin.store, canvasName).init().catch((error) => {
           console.error("SiYuan Canvas konnte nicht initialisiert werden", error);
           this.element.innerHTML = `<div class="syc-error">Canvas konnte nicht geladen werden: ${String(error)}</div>`;
         });
@@ -1174,24 +1268,31 @@ export default class SiYuanCanvas extends Plugin {
 
   private async openMenu() {
     const known = await this.store.list();
-    const options = ["Neuen Canvas erstellen", ...known.map((item) => item.id)];
+    const options = ["Neuen Canvas erstellen", ...known.map((item) => item.name || item.id)];
     const selected = prompt(
       `Canvas öffnen:\n${options.map((item, index) => `${index + 1}: ${item}`).join("\n")}\n\nNummer:`,
       "1",
     );
     const index = (Number(selected) || 0) - 1;
     if (index < 0 || index >= options.length) return;
-    this.open(index === 0 ? `canvas-${Date.now()}` : known[index - 1].id);
+    if (index === 0) {
+      const name = prompt("Name des neuen Canvas:", "Neuer Canvas")?.trim();
+      if (!name) return;
+      this.open(`canvas-${Date.now()}`, name);
+      return;
+    }
+    const existing = known[index - 1];
+    this.open(existing.id, existing.name || "Unbenannter Canvas");
   }
 
-  private open(canvasId: string) {
+  private open(canvasId: string, canvasName: string) {
     openTab({
       app: this.app,
       custom: {
         icon: "iconSiYuanCanvas",
-        title: "Canvas",
-        data: { canvasId },
-        id: `${this.name}${this.tabType}`,
+        title: canvasName,
+        data: { canvasId, canvasName },
+        id: `${this.name}${this.tabType}${canvasId}`,
       },
     });
   }
