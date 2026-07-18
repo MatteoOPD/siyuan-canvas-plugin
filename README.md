@@ -10,7 +10,7 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - Dokumentkarten sind blau mit Seitensymbol, Blockkarten violett mit Absatzsymbol gekennzeichnet.
 - Dokumente aus dem Dateibaum und einzelne Blöcke lassen sich direkt auf die Fläche ziehen; auch mehrere IDs in einem Drop werden übernommen.
 - `+ Text`: freie, nur im Canvas gespeicherte Textkarte erstellen.
-- `Canvas`: einen anderen Canvas als kompakte Referenzkarte einbetten. Die Karte zeigt Umfang und eine kurze Vorschau; Doppelklick oder `Canvas öffnen` öffnet den Ziel-Canvas. Direkte Selbstreferenzen werden verhindert.
+- `Canvas`: einen anderen Canvas als interaktive Karte einbetten. Karten, Gruppen, Pfeile und Pfeiltexte des Ziel-Canvas bleiben sichtbar; in der Vorschau lässt sich zoomen, verschieben und eine Karte auswählen. Ein Doppelklick öffnet je nach Kartentyp die SiYuan-Quelle, den Link oder den zugehörigen Canvas. Direkte Selbstreferenzen werden verhindert.
 - `Web/Media`: Webseiten, Bilder, Audio, Video oder PDFs über eine HTTP-/HTTPS-Adresse einbetten. URLs und normaler Text können außerdem direkt eingefügt oder auf den Canvas gezogen werden.
 - `Form`: Rechteck, Ellipse oder Raute mit frei editierbarer Beschriftung erstellen.
 - Karten am Kopf verschieben und an der rechten unteren Ecke skalieren.

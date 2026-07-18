@@ -1306,10 +1306,8 @@ class CanvasView {
         ? `${canvas.nodes.length} Karten · ${canvas.edges.length} Verbindungen`
         : "Referenz fehlt";
       body.classList.add("syc-canvas-preview");
-      const summary = document.createElement("div");
-      summary.className = "syc-canvas-preview__summary";
-      const names = canvas?.nodes.slice(0, 6).map((item) => this.nodeDataName(item)).filter(Boolean) || [];
-      summary.innerHTML = `<strong>${canvas ? "Enthaltener Canvas" : "Canvas nicht verfügbar"}</strong><span>${escapeHtml(names.join(" · ") || "Noch keine Karten")}</span>`;
+      if (canvas) await this.renderNestedCanvas(body, canvas);
+      else body.innerHTML = `<div class="syc-canvas-preview__missing"><strong>Canvas nicht verfügbar</strong><span>Die referenzierte Canvas-Datei wurde nicht gefunden.</span></div>`;
       const open = document.createElement("button");
       open.type = "button";
       open.className = "syc-button syc-button--primary syc-canvas-preview__open";
@@ -1319,7 +1317,7 @@ class CanvasView {
         event.stopPropagation();
         if (node.canvasRefId) this.openCanvas(node.canvasRefId, title.textContent || node.canvasRefId);
       });
-      body.append(summary, open);
+      body.append(open);
       card.addEventListener("dblclick", (event) => {
         if ((event.target as HTMLElement).closest("input, textarea, button")) return;
         event.stopPropagation();
@@ -1461,6 +1459,188 @@ class CanvasView {
       this.deleteSelection();
     });
 
+  }
+
+  private async renderNestedCanvas(host: HTMLElement, canvas: CanvasGraph) {
+    host.innerHTML = "";
+    const viewport = document.createElement("div");
+    viewport.className = "syc-nested";
+    viewport.title = "Mausrad: zoomen · Ziehen: verschieben · Doppelklick: Karte öffnen";
+    const scene = document.createElement("div");
+    scene.className = "syc-nested__scene";
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.classList.add("syc-nested__edges");
+    scene.append(svg);
+    viewport.append(scene);
+    host.append(viewport);
+
+    if (!canvas.nodes.length) {
+      viewport.innerHTML = `<div class="syc-nested__empty">Dieser Canvas ist leer.</div>`;
+      return;
+    }
+
+    const padding = 44;
+    const minX = Math.min(...canvas.nodes.map((item) => item.x));
+    const minY = Math.min(...canvas.nodes.map((item) => item.y));
+    const maxX = Math.max(...canvas.nodes.map((item) => item.x + item.width));
+    const maxY = Math.max(...canvas.nodes.map((item) => item.y + item.height));
+    const sceneWidth = Math.max(240, maxX - minX + padding * 2);
+    const sceneHeight = Math.max(160, maxY - minY + padding * 2);
+    scene.style.width = `${sceneWidth}px`;
+    scene.style.height = `${sceneHeight}px`;
+    svg.setAttribute("width", String(sceneWidth));
+    svg.setAttribute("height", String(sceneHeight));
+    svg.setAttribute("viewBox", `0 0 ${sceneWidth} ${sceneHeight}`);
+
+    const nodeById = new Map(canvas.nodes.map((item) => [item.id, item]));
+    const coordinates = (item: CanvasNode) => ({
+      x: item.x - minX + padding,
+      y: item.y - minY + padding,
+      width: item.width,
+      height: item.height,
+    });
+    const markerId = `syc-nested-arrow-${canvas.canvasId}-${Math.random().toString(36).slice(2, 7)}`;
+    const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+    defs.innerHTML = `<marker id="${escapeHtml(markerId)}" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L10,4 L0,8 z"></path></marker>`;
+    svg.append(defs);
+
+    canvas.edges.forEach((edge) => {
+      const source = nodeById.get(edge.source);
+      const target = nodeById.get(edge.target);
+      if (!source || !target) return;
+      const from = coordinates(source);
+      const to = coordinates(target);
+      const x1 = from.x + from.width / 2;
+      const y1 = from.y + from.height / 2;
+      const x2 = to.x + to.width / 2;
+      const y2 = to.y + to.height / 2;
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const curve = Math.max(55, Math.abs(x2 - x1) * 0.38);
+      path.setAttribute("d", edge.style === "straight"
+        ? `M ${x1} ${y1} L ${x2} ${y2}`
+        : edge.style === "orthogonal"
+          ? `M ${x1} ${y1} L ${(x1 + x2) / 2} ${y1} L ${(x1 + x2) / 2} ${y2} L ${x2} ${y2}`
+          : `M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}`);
+      path.setAttribute("marker-end", `url(#${markerId})`);
+      const edgeColor = edge.color || "default";
+      path.style.stroke = COLOR_VALUES[edgeColor]
+        || (/^#[0-9a-f]{6}$/i.test(edgeColor) ? edgeColor : "")
+        || "var(--b3-theme-on-surface-light)";
+      svg.append(path);
+      if (edge.label) {
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.setAttribute("x", String((x1 + x2) / 2));
+        label.setAttribute("y", String((y1 + y2) / 2 - 8));
+        label.textContent = edge.label;
+        svg.append(label);
+      }
+    });
+
+    await Promise.all(canvas.nodes.map(async (item) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = `syc-nested-node syc-nested-node--${item.type}`;
+      card.dataset.color = item.color && CARD_COLORS.includes(item.color) ? item.color : "custom";
+      if (item.color && /^#[0-9a-f]{6}$/i.test(item.color)) card.style.setProperty("--syc-nested-color", item.color);
+      if (item.type === "shape") card.dataset.shape = item.shape || "rectangle";
+      const box = coordinates(item);
+      card.style.left = `${box.x}px`;
+      card.style.top = `${box.y}px`;
+      card.style.width = `${box.width}px`;
+      card.style.height = `${box.height}px`;
+      let name = this.nodeDataName(item);
+      if (item.type === "document" || item.type === "block") {
+        try { name = await getReferenceTitle(item); } catch { /* keep fallback */ }
+      }
+      const kind = item.type === "document" ? "Dokument"
+        : item.type === "block" ? "Block"
+          : item.type === "canvas" ? "Canvas"
+            : item.type === "link" ? "Web/Media"
+              : item.type === "group" ? "Gruppe"
+                : item.type === "shape" ? "Form" : "Text";
+      card.innerHTML = `<small>${kind}</small><strong>${escapeHtml(name)}</strong>`;
+      card.title = `${kind}: ${name} · Doppelklick zum Öffnen`;
+      card.addEventListener("click", (event) => {
+        event.stopPropagation();
+        viewport.querySelectorAll(".syc-nested-node.is-selected").forEach((node) => node.classList.remove("is-selected"));
+        card.classList.add("is-selected");
+      });
+      card.addEventListener("dblclick", (event) => {
+        event.stopPropagation();
+        this.openNestedNode(item, canvas);
+      });
+      scene.append(card);
+    }));
+
+    let scale = 1;
+    let pan: Point = { x: 0, y: 0 };
+    let dragging: { x: number; y: number; panX: number; panY: number } | undefined;
+    const applyTransform = () => {
+      scene.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${scale})`;
+    };
+    const fit = () => {
+      const width = viewport.clientWidth || 360;
+      const height = viewport.clientHeight || 190;
+      scale = Math.min(1, Math.max(0.08, Math.min((width - 20) / sceneWidth, (height - 20) / sceneHeight)));
+      pan = { x: (width - sceneWidth * scale) / 2, y: (height - sceneHeight * scale) / 2 };
+      applyTransform();
+    };
+    viewport.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = viewport.getBoundingClientRect();
+      const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const previous = scale;
+      scale = Math.min(1.8, Math.max(0.08, scale * (event.deltaY < 0 ? 1.12 : 0.89)));
+      pan.x = pointer.x - ((pointer.x - pan.x) * scale) / previous;
+      pan.y = pointer.y - ((pointer.y - pan.y) * scale) / previous;
+      applyTransform();
+    }, { passive: false });
+    viewport.addEventListener("pointerdown", (event) => {
+      if ((event.target as HTMLElement).closest(".syc-nested-node, .syc-nested__controls")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragging = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+      viewport.setPointerCapture(event.pointerId);
+    });
+    viewport.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      pan.x = dragging.panX + event.clientX - dragging.x;
+      pan.y = dragging.panY + event.clientY - dragging.y;
+      applyTransform();
+    });
+    viewport.addEventListener("pointerup", (event) => {
+      dragging = undefined;
+      if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+    });
+
+    const controls = document.createElement("div");
+    controls.className = "syc-nested__controls";
+    controls.innerHTML = `<button type="button" title="Einpassen">⛶</button><button type="button" title="Canvas öffnen">↗</button>`;
+    controls.children[0].addEventListener("click", (event) => { event.stopPropagation(); fit(); });
+    controls.children[1].addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.openCanvas(canvas.canvasId, canvas.name);
+    });
+    viewport.append(controls);
+    window.requestAnimationFrame(fit);
+  }
+
+  private openNestedNode(node: CanvasNode, owner: CanvasGraph) {
+    if (node.type === "document" || node.type === "block") {
+      const id = referenceId(node);
+      if (id) openTab({ app: this.app, doc: { id } });
+      return;
+    }
+    if (node.type === "canvas" && node.canvasRefId) {
+      this.openCanvas(node.canvasRefId, node.label || "Canvas");
+      return;
+    }
+    if (node.type === "link" && node.url) {
+      window.open(node.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    this.openCanvas(owner.canvasId, owner.name);
   }
 
   private movementNodes() {
