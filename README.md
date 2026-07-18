@@ -10,12 +10,15 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - Dokumentkarten sind blau mit Seitensymbol, Blockkarten violett mit Absatzsymbol gekennzeichnet.
 - Dokumente aus dem Dateibaum und einzelne Blöcke lassen sich direkt auf die Fläche ziehen; auch mehrere IDs in einem Drop werden übernommen.
 - `+ Text`: freie, nur im Canvas gespeicherte Textkarte erstellen.
+- `Canvas`: einen anderen Canvas als kompakte Referenzkarte einbetten. Die Karte zeigt Umfang und eine kurze Vorschau; Doppelklick oder `Canvas öffnen` öffnet den Ziel-Canvas. Direkte Selbstreferenzen werden verhindert.
+- `Web/Media`: Webseiten, Bilder, Audio, Video oder PDFs über eine HTTP-/HTTPS-Adresse einbetten. URLs und normaler Text können außerdem direkt eingefügt oder auf den Canvas gezogen werden.
 - `Form`: Rechteck, Ellipse oder Raute mit frei editierbarer Beschriftung erstellen.
 - Karten am Kopf verschieben und an der rechten unteren Ecke skalieren.
 - Auf freier Fläche ziehen erstellt eine Lasso-Auswahl; `Shift` ergänzt Karten, `Strg+A` wählt alle Karten.
-- Mehrere ausgewählte Karten lassen sich gemeinsam bewegen, färben, duplizieren, löschen, ausrichten, verteilen oder gruppieren. Die schwebende Leiste erscheint direkt über der Auswahl.
+- Mehrere ausgewählte Karten lassen sich gemeinsam bewegen, mit Preset- oder eigener Farbe versehen, duplizieren, löschen, horizontal und vertikal ausrichten oder verteilen sowie gruppieren. Die schwebende Leiste erscheint direkt über der Auswahl.
 - Verschieben rastet am Punktraster ein. `Alt` umgeht das Raster, `Shift` beschränkt die Bewegung auf eine Achse.
 - `Strg+Z` und `Strg+Umschalt+Z` machen Canvas-Änderungen rückgängig beziehungsweise wiederholen sie.
+- `Strg+D` dupliziert die Auswahl. Eingefügter Text erzeugt eine Textkarte, eine eingefügte URL eine Web-/Medienkarte.
 - Dokumente und Blöcke direkt in der Karte wie in SiYuan bearbeiten.
 - Über einer Karte scrollt das Mausrad deren Inhalt; `Strg`/`Cmd` + Mausrad zoomt weiterhin den Canvas.
 - Zum Verbinden einen Anschluss-Punkt am Kartenrand auf die Zielkarte ziehen. `Verbinden` blendet die Punkte dauerhaft ein.
@@ -26,13 +29,17 @@ Ein visueller Canvas für SiYuan-Dokumente, Blöcke und freie Textkarten. Refere
 - Pfeil anklicken und `Pfeil` wählen (oder doppelt anklicken), um Quelle, Ziel, Beschriftung und Linienform – gebogen, gerade oder rechtwinklig – zu ändern. Mit `Entf` wird der ausgewählte Pfeil gelöscht.
 - Mausrad zoomt zum Mauszeiger; `Leertaste` + Ziehen oder die mittlere Maustaste verschiebt den Canvas.
 
-Der Canvas speichert nur Layout, Textkarten und Verbindungen. SiYuan bleibt für Dokument- und Blockinhalte die Quelle der Wahrheit.
+Der Canvas speichert nur Layout, Textkarten, externe Adressen, Canvas-Referenzen und Verbindungen. SiYuan bleibt für Dokument- und Blockinhalte die Quelle der Wahrheit. Verschachtelte Canvas werden nicht kopiert oder rekursiv geladen.
 
 ## Datenspeicher
 
 Die Graph-Dateien liegen über die SiYuan-Datei-API unter `/data/storage/petal/siyuan-canvas/`. Jeder Canvas besitzt dort eine `<canvasId>.json`; `index.json` enthält die Liste der vorhandenen Canvas-Dateien. Im Docker-Container entspricht das dem Pfad `/siyuan/workspace/data/storage/petal/siyuan-canvas/` und liegt damit im bestehenden SiYuan-Volume.
 
-Gespeichert werden Canvas-Name, Position, Größe und Farbe der Karten, freie Textkarten, Formen sowie Verbindungen, Pfeiltexte und Linienformen. Inhalte referenzierter Dokumente und Blöcke werden nicht kopiert, sondern weiterhin direkt aus SiYuan geladen und dort bearbeitet.
+Gespeichert werden Canvas-Name, Position, Größe und Farbe der Karten, freie Textkarten, Formen, Web-Adressen, Canvas-Referenzen sowie Verbindungen, Pfeiltexte und Linienformen. Inhalte referenzierter Dokumente und Blöcke werden nicht kopiert, sondern weiterhin direkt aus SiYuan geladen und dort bearbeitet.
+
+## Bewusste Grenzen
+
+Version 1.0 deckt den vollständigen Desktop-Kern für visuelles Arbeiten ab. Nicht enthalten sind Echtzeit-Kollaboration, eigene Sync-/Offline-Logik, KI-Layout, vollwertige Zeichenwerkzeuge, Bildbearbeitung und mobile Bearbeitung. Diese Bereiche würden das schlanke Plugin zu einer separaten Whiteboard-Anwendung machen.
 
 ## EasyPanel: separater Canvas-Installer
 

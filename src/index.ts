@@ -9,8 +9,8 @@ import {
 } from "@jsplumb/browser-ui";
 import "./index.css";
 
-type NodeKind = "document" | "block" | "text" | "group" | "shape";
-type CardColor = "default" | "red" | "orange" | "yellow" | "green" | "cyan" | "blue" | "pink" | "purple";
+type NodeKind = "document" | "block" | "text" | "group" | "shape" | "canvas" | "link";
+type CardColor = string;
 type ShapeKind = "rectangle" | "ellipse" | "diamond";
 type EdgeStyle = "bezier" | "straight" | "orthogonal";
 
@@ -22,6 +22,8 @@ interface CanvasNode {
   markdown?: string;
   label?: string;
   shape?: ShapeKind;
+  canvasRefId?: string;
+  url?: string;
   color?: CardColor;
   x: number;
   y: number;
@@ -76,8 +78,8 @@ const SIYUAN_ID = /^[0-9]{14}-[a-z0-9]{7}$/;
 const SIYUAN_ID_GLOBAL = /[0-9]{14}-[a-z0-9]{7}/g;
 const GRID_SIZE = 22;
 const HISTORY_LIMIT = 50;
-const CARD_COLORS: CardColor[] = ["default", "red", "orange", "yellow", "green", "cyan", "blue", "pink", "purple"];
-const COLOR_VALUES: Record<CardColor, string> = {
+const CARD_COLORS = ["default", "red", "orange", "yellow", "green", "cyan", "blue", "pink", "purple"];
+const COLOR_VALUES: Record<string, string> = {
   default: "",
   red: "#d65c5c",
   orange: "#df8b45",
@@ -88,6 +90,45 @@ const COLOR_VALUES: Record<CardColor, string> = {
   pink: "#d46f9c",
   purple: "#916dcc",
 };
+
+function normalizedUrl(value: string): string | undefined {
+  const input = value.trim();
+  if (!input) return undefined;
+  try {
+    const candidate = /^https?:\/\//i.test(input)
+      ? input
+      : input.startsWith("/")
+        ? new URL(input, window.location.origin).href
+        : /^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/:?#]|$)/i.test(input)
+          ? `https://${input}`
+          : "";
+    if (!candidate) return undefined;
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    return parsed.href;
+  } catch {
+    return undefined;
+  }
+}
+
+function mediaType(url: string): "image" | "video" | "audio" | "pdf" | "web" {
+  const path = new URL(url).pathname.toLowerCase();
+  if (/\.(png|jpe?g|gif|webp|svg|avif)$/.test(path)) return "image";
+  if (/\.(mp4|webm|mov|m4v)$/.test(path)) return "video";
+  if (/\.(mp3|wav|ogg|m4a|flac)$/.test(path)) return "audio";
+  if (/\.pdf$/.test(path)) return "pdf";
+  return "web";
+}
+
+function embeddedUrl(url: string): string {
+  const parsed = new URL(url);
+  if (parsed.hostname === "youtu.be") return `https://www.youtube.com/embed/${parsed.pathname.slice(1)}`;
+  if (parsed.hostname.endsWith("youtube.com")) {
+    const id = parsed.searchParams.get("v");
+    if (id) return `https://www.youtube.com/embed/${id}`;
+  }
+  return url;
+}
 
 const newId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -272,6 +313,7 @@ class CanvasView {
     private element: HTMLElement,
     private canvasId: string,
     private store: GraphStore,
+    private openCanvas: (canvasId: string, canvasName: string) => void,
     private initialName = "Unbenannter Canvas",
   ) {
     this.graph = emptyGraph(canvasId, initialName);
@@ -303,6 +345,8 @@ class CanvasView {
         <div class="syc-toolbar__group">
           <button class="syc-button syc-button--primary" data-action="reference">＋ Referenz</button>
           <button class="syc-button" data-action="text">＋ Text</button>
+          <button class="syc-button" data-action="canvas">◈ Canvas</button>
+          <button class="syc-button" data-action="link-card">↗ Web/Media</button>
           <button class="syc-button" data-action="group">▣ Gruppe</button>
           <button class="syc-button" data-action="shape">◇ Form</button>
           <button class="syc-button" data-action="link">↗ Verbinden</button>
@@ -326,6 +370,7 @@ class CanvasView {
       </div>
       <div class="syc-color-menu is-hidden" data-role="color-menu" aria-label="Farbe wählen">
         ${CARD_COLORS.map((color) => `<button class="syc-color-swatch syc-color-swatch--${color}" data-action="set-color" data-color="${color}" title="${color}"></button>`).join("")}
+        <label class="syc-color-custom" title="Eigene Farbe"><input data-role="custom-color" type="color" value="#568fd0"><span>＋</span></label>
       </div>
       <div class="syc-shape-menu is-hidden" data-role="shape-menu" aria-label="Form hinzufügen">
         <button data-action="add-shape" data-shape="rectangle">▭ Rechteck</button>
@@ -360,14 +405,34 @@ class CanvasView {
           <div class="syc-dialog__actions"><button type="button" class="syc-button" data-action="close-edge">Abbrechen</button><button class="syc-button syc-button--primary" type="submit">Übernehmen</button></div>
         </form>
       </div>
+      <div class="syc-dialog-backdrop is-hidden" data-role="canvas-dialog">
+        <form class="syc-dialog syc-dialog--small" data-role="canvas-form">
+          <header class="syc-dialog__header"><strong>Canvas einbetten</strong><button type="button" class="syc-dialog__close" data-action="close-canvas">×</button></header>
+          <label class="syc-field syc-field--spaced"><span>Canvas</span><select data-role="canvas-reference"></select></label>
+          <p class="syc-dialog__note">Die Karte speichert nur eine Referenz. Doppelklick öffnet den verschachtelten Canvas.</p>
+          <div class="syc-dialog__actions"><button type="button" class="syc-button" data-action="close-canvas">Abbrechen</button><button class="syc-button syc-button--primary" type="submit">Einbetten</button></div>
+        </form>
+      </div>
+      <div class="syc-dialog-backdrop is-hidden" data-role="link-dialog">
+        <form class="syc-dialog syc-dialog--small" data-role="link-form">
+          <header class="syc-dialog__header"><strong>Web oder Medium einbetten</strong><button type="button" class="syc-dialog__close" data-action="close-link-card">×</button></header>
+          <input class="syc-search" data-role="link-url" type="url" required placeholder="https://…">
+          <input class="syc-search syc-search--second" data-role="link-label" maxlength="80" placeholder="Titel (optional)">
+          <div class="syc-dialog__actions"><button type="button" class="syc-button" data-action="close-link-card">Abbrechen</button><button class="syc-button syc-button--primary" type="submit">Einbetten</button></div>
+        </form>
+      </div>
       <div class="syc-selection-bar is-hidden" data-role="selection-bar" aria-label="Auswahl bearbeiten">
         <span data-role="selection-count"></span>
         <button data-action="floating-color" title="Farbe">●</button>
         <button data-action="duplicate" title="Duplizieren">⧉</button>
         <button data-action="align-left" data-requires-multi title="Links ausrichten">⇤</button>
         <button data-action="align-center" data-requires-multi title="Horizontal zentrieren">↔</button>
+        <button data-action="align-right" data-requires-multi title="Rechts ausrichten">⇥</button>
         <button data-action="align-top" data-requires-multi title="Oben ausrichten">⇡</button>
+        <button data-action="align-middle" data-requires-multi title="Vertikal zentrieren">↕</button>
+        <button data-action="align-bottom" data-requires-multi title="Unten ausrichten">⇣</button>
         <button data-action="distribute-horizontal" data-requires-three title="Horizontal verteilen">⇹</button>
+        <button data-action="distribute-vertical" data-requires-three title="Vertikal verteilen">⇳</button>
         <button data-action="group-selection" title="Auswahl gruppieren">▣</button>
         <button data-action="delete" class="is-danger" title="Löschen">⌫</button>
       </div>`;
@@ -389,7 +454,7 @@ class CanvasView {
       maxConnections: -1,
       uniqueEndpoint: true,
     });
-    this.plumbing.addTargetSelector(".syc-card__header, .syc-card__body, .syc-card__footer", {
+    this.plumbing.addTargetSelector(".syc-card", {
       anchor: "Continuous",
       maxConnections: -1,
     });
@@ -478,12 +543,19 @@ class CanvasView {
     viewport.addEventListener("drop", (event) => {
       event.preventDefault();
       const ids = droppedSiYuanIds(event.dataTransfer);
-      if (!ids.length) {
-        showMessage("Der Drop enthält keine erkennbare SiYuan-ID.");
-        return;
-      }
       const rect = viewport.getBoundingClientRect();
       const origin = this.toWorld(event.clientX - rect.left, event.clientY - rect.top);
+      if (!ids.length) {
+        const raw = event.dataTransfer?.getData("text/uri-list")
+          || event.dataTransfer?.getData("text/plain")
+          || "";
+        const text = raw.split("\n").find((line) => line.trim() && !line.startsWith("#"))?.trim() || "";
+        const url = normalizedUrl(text);
+        if (url) this.addLinkNode(url, "", origin);
+        else if (text) this.addTextNode(origin, text);
+        else showMessage("Der Drop enthält keine erkennbare SiYuan-ID, URL oder Text.");
+        return;
+      }
       void Promise.all(ids.map((id, index) => this.addReferenceById(id, {
         x: origin.x + index * 32,
         y: origin.y + index * 32,
@@ -498,6 +570,8 @@ class CanvasView {
       if (event.key === "Escape") {
         this.closeSearch();
         this.closeEdgeDialog();
+        this.closeCanvasDialog();
+        this.closeLinkDialog();
         this.cancelLinkMode();
       }
       if (!editing && event.code === "Space") {
@@ -516,6 +590,10 @@ class CanvasView {
         event.preventDefault();
         this.selectNodes(this.graph.nodes.map((node) => node.id));
       }
+      if (!editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        void this.duplicateSelectedNodes();
+      }
       if ((event.key === "Delete" || event.key === "Backspace") && !editing) {
         void this.handleAction("delete");
       }
@@ -527,6 +605,16 @@ class CanvasView {
         event.preventDefault();
         this.fitToSelection();
       }
+    });
+    this.element.addEventListener("paste", (event) => {
+      const target = event.target as HTMLElement;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable) return;
+      const text = event.clipboardData?.getData("text/plain")?.trim();
+      if (!text) return;
+      event.preventDefault();
+      const url = normalizedUrl(text);
+      if (url) this.addLinkNode(url);
+      else this.addTextNode(this.nextPosition(), text);
     });
     this.element.addEventListener("keyup", (event) => {
       if (event.code === "Space") this.spacePressed = false;
@@ -547,11 +635,30 @@ class CanvasView {
       event.preventDefault();
       this.saveEdgeLabel();
     });
+    this.element.querySelector<HTMLFormElement>("[data-role='canvas-form']")!.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const select = this.element.querySelector<HTMLSelectElement>("[data-role='canvas-reference']")!;
+      const option = select.selectedOptions[0];
+      if (select.value && option) this.addCanvasNode(select.value, option.textContent || select.value);
+    });
+    this.element.querySelector<HTMLFormElement>("[data-role='link-form']")!.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = this.element.querySelector<HTMLInputElement>("[data-role='link-url']")!;
+      const url = normalizedUrl(input.value);
+      if (!url) return showMessage("Bitte eine gültige HTTP- oder HTTPS-Adresse eingeben.");
+      const label = this.element.querySelector<HTMLInputElement>("[data-role='link-label']")!.value.trim();
+      this.addLinkNode(url, label);
+    });
+    this.element.querySelector<HTMLInputElement>("[data-role='custom-color']")!.addEventListener("change", (event) => {
+      this.setSelectedColor((event.target as HTMLInputElement).value);
+    });
     this.element.querySelectorAll<HTMLElement>(".syc-dialog-backdrop").forEach((backdrop) => {
       backdrop.addEventListener("pointerdown", (event) => {
         if (event.target === backdrop) {
           this.closeSearch();
           this.closeEdgeDialog();
+          this.closeCanvasDialog();
+          this.closeLinkDialog();
         }
       });
     });
@@ -566,6 +673,10 @@ class CanvasView {
       this.openSearch();
     } else if (action === "text") {
       this.addTextNode();
+    } else if (action === "canvas") {
+      await this.openCanvasDialog();
+    } else if (action === "link-card") {
+      this.openLinkDialog();
     } else if (action === "group") {
       this.addGroupNode();
     } else if (action === "shape") {
@@ -584,7 +695,7 @@ class CanvasView {
       this.setSelectedColor((trigger?.dataset.color || "default") as CardColor);
     } else if (action === "floating-color") {
       this.toggleColorMenu(true);
-    } else if (action === "align-left" || action === "align-center" || action === "align-top" || action === "distribute-horizontal") {
+    } else if (["align-left", "align-center", "align-right", "align-top", "align-middle", "align-bottom", "distribute-horizontal", "distribute-vertical"].includes(action)) {
       this.alignSelection(action);
     } else if (action === "group-selection") {
       this.groupSelection();
@@ -596,6 +707,10 @@ class CanvasView {
       this.closeSearch();
     } else if (action === "close-edge") {
       this.closeEdgeDialog();
+    } else if (action === "close-canvas") {
+      this.closeCanvasDialog();
+    } else if (action === "close-link-card") {
+      this.closeLinkDialog();
     } else if (action === "delete") {
       this.deleteSelection();
     } else if (action === "save") {
@@ -818,11 +933,11 @@ class CanvasView {
     }
   }
 
-  private addTextNode(position = this.nextPosition()) {
+  private addTextNode(position = this.nextPosition(), markdown = "") {
     const node: CanvasNode = {
       id: newId("node"),
       type: "text",
-      markdown: "",
+      markdown,
       x: position.x,
       y: position.y,
       width: 340,
@@ -834,6 +949,76 @@ class CanvasView {
       this.selectNode(node.id);
       this.card(node.id)?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
     });
+    this.updateEmptyState();
+    this.queueSave();
+  }
+
+  private async openCanvasDialog() {
+    const dialog = this.element.querySelector<HTMLElement>("[data-role='canvas-dialog']")!;
+    const select = this.element.querySelector<HTMLSelectElement>("[data-role='canvas-reference']")!;
+    select.innerHTML = "";
+    let canvases: CanvasIndexEntry[];
+    try {
+      canvases = (await this.store.list()).filter((item) => item.id !== this.canvasId);
+    } catch (error) {
+      showMessage(`Canvas-Liste konnte nicht geladen werden: ${String(error)}`);
+      return;
+    }
+    if (!canvases.length) {
+      showMessage("Lege zuerst einen zweiten Canvas an. Ein Canvas kann sich nicht selbst einbetten.");
+      return;
+    }
+    canvases.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = item.name || item.id;
+      select.append(option);
+    });
+    dialog.classList.remove("is-hidden");
+    window.setTimeout(() => select.focus(), 0);
+  }
+
+  private closeCanvasDialog() {
+    this.element.querySelector("[data-role='canvas-dialog']")?.classList.add("is-hidden");
+  }
+
+  private addCanvasNode(canvasRefId: string, label: string, position = this.nextPosition()) {
+    if (!canvasRefId || canvasRefId === this.canvasId) return;
+    const node: CanvasNode = {
+      id: newId("node"), type: "canvas", canvasRefId, label,
+      x: position.x, y: position.y, width: 390, height: 270, color: "cyan",
+    };
+    this.recordHistory();
+    this.graph.nodes.push(node);
+    void this.appendCard(node).then(() => this.selectNode(node.id));
+    this.closeCanvasDialog();
+    this.updateEmptyState();
+    this.queueSave();
+  }
+
+  private openLinkDialog() {
+    const dialog = this.element.querySelector<HTMLElement>("[data-role='link-dialog']")!;
+    const url = this.element.querySelector<HTMLInputElement>("[data-role='link-url']")!;
+    const label = this.element.querySelector<HTMLInputElement>("[data-role='link-label']")!;
+    url.value = "";
+    label.value = "";
+    dialog.classList.remove("is-hidden");
+    window.setTimeout(() => url.focus(), 0);
+  }
+
+  private closeLinkDialog() {
+    this.element.querySelector("[data-role='link-dialog']")?.classList.add("is-hidden");
+  }
+
+  private addLinkNode(url: string, label = "", position = this.nextPosition()) {
+    const node: CanvasNode = {
+      id: newId("node"), type: "link", url, label,
+      x: position.x, y: position.y, width: 420, height: 300, color: "default",
+    };
+    this.recordHistory();
+    this.graph.nodes.push(node);
+    void this.appendCard(node).then(() => this.selectNode(node.id));
+    this.closeLinkDialog();
     this.updateEmptyState();
     this.queueSave();
   }
@@ -914,13 +1099,13 @@ class CanvasView {
   }
 
   private setSelectedColor(color: CardColor) {
-    if (!CARD_COLORS.includes(color)) return;
+    if (!CARD_COLORS.includes(color) && !/^#[0-9a-f]{6}$/i.test(color)) return;
     if (!this.selectedNodes.size && !this.selectedEdge) return;
     this.recordHistory();
     this.graph.nodes.filter((item) => this.selectedNodes.has(item.id)).forEach((node) => {
       node.color = color;
       const card = this.card(node.id);
-      if (card) card.dataset.color = color;
+      if (card) this.applyCardColor(card, color);
     });
     const edge = this.graph.edges.find((item) => item.id === this.selectedEdge);
     if (edge) edge.color = color;
@@ -950,12 +1135,19 @@ class CanvasView {
     const minX = Math.min(...nodes.map((node) => node.x));
     const minY = Math.min(...nodes.map((node) => node.y));
     const maxX = Math.max(...nodes.map((node) => node.x + node.width));
+    const maxY = Math.max(...nodes.map((node) => node.y + node.height));
     if (action === "align-left") nodes.forEach((node) => { node.x = minX; });
     if (action === "align-top") nodes.forEach((node) => { node.y = minY; });
     if (action === "align-center") {
       const center = (minX + maxX) / 2;
       nodes.forEach((node) => { node.x = center - node.width / 2; });
     }
+    if (action === "align-right") nodes.forEach((node) => { node.x = maxX - node.width; });
+    if (action === "align-middle") {
+      const center = (minY + maxY) / 2;
+      nodes.forEach((node) => { node.y = center - node.height / 2; });
+    }
+    if (action === "align-bottom") nodes.forEach((node) => { node.y = maxY - node.height; });
     if (action === "distribute-horizontal" && nodes.length >= 3) {
       const ordered = [...nodes].sort((a, b) => a.x - b.x);
       const totalWidth = ordered.reduce((sum, node) => sum + node.width, 0);
@@ -966,10 +1158,20 @@ class CanvasView {
         x += node.width + gap;
       });
     }
+    if (action === "distribute-vertical" && nodes.length >= 3) {
+      const ordered = [...nodes].sort((a, b) => a.y - b.y);
+      const totalHeight = ordered.reduce((sum, node) => sum + node.height, 0);
+      const gap = Math.max(0, (maxY - minY - totalHeight) / (ordered.length - 1));
+      let y = minY;
+      ordered.forEach((node) => {
+        node.y = y;
+        y += node.height + gap;
+      });
+    }
     nodes.forEach((node) => {
       this.positionCard(node);
       const card = this.card(node.id);
-      if (card && node.type !== "group") this.plumbing?.revalidate(card);
+      if (card) this.plumbing?.revalidate(card);
     });
     this.positionSelectionBar();
     this.queueSave();
@@ -1028,7 +1230,7 @@ class CanvasView {
     this.renderConnections();
     this.graph.nodes.forEach((node) => {
       const card = this.card(node.id);
-      if (card && node.type !== "group") this.plumbing?.revalidate(card);
+      if (card) this.plumbing?.revalidate(card);
     });
     this.plumbing?.repaintEverything();
   }
@@ -1038,11 +1240,11 @@ class CanvasView {
     card.className = `syc-card syc-card--${node.type}`;
     card.id = node.id;
     card.dataset.nodeId = node.id;
-    card.dataset.color = node.color || "default";
+    this.applyCardColor(card, node.color || "default");
     if (node.type === "shape") card.dataset.shape = node.shape || "rectangle";
     card.innerHTML = `
       <header class="syc-card__header">
-        <span class="syc-card__kind">${node.type === "document" ? "▤ Dokument" : node.type === "block" ? "¶ Block" : node.type === "group" ? "▣ Gruppe" : node.type === "shape" ? "◇ Form" : "✎ Text"}</span>
+        <span class="syc-card__kind">${node.type === "document" ? "▤ Dokument" : node.type === "block" ? "¶ Block" : node.type === "group" ? "▣ Gruppe" : node.type === "shape" ? "◇ Form" : node.type === "canvas" ? "◈ Canvas" : node.type === "link" ? "↗ Web/Media" : "✎ Text"}</span>
         <strong class="syc-card__title"></strong>
         <button class="syc-card__menu" title="Karte löschen">×</button>
       </header>
@@ -1055,7 +1257,7 @@ class CanvasView {
       <div class="syc-resize" title="Kartengröße ändern"></div>`;
     this.world().append(card);
     this.positionCard(node);
-    if (node.type !== "group") this.plumbing?.manage(card);
+    this.plumbing?.manage(card);
 
     const title = card.querySelector<HTMLElement>(".syc-card__title")!;
     const body = card.querySelector<HTMLElement>(".syc-card__body")!;
@@ -1091,6 +1293,81 @@ class CanvasView {
       card.querySelector(".syc-card__kind")?.after(input);
       footer.textContent = "Enthaltene Karten bewegen sich mit der Gruppe";
       body.innerHTML = `<span class="syc-group__hint">Karten hier anordnen</span>`;
+    } else if (node.type === "canvas") {
+      let canvas: CanvasGraph | null = null;
+      try {
+        canvas = node.canvasRefId ? await this.store.load(node.canvasRefId) : null;
+      } catch {
+        canvas = null;
+      }
+      title.textContent = canvas?.name || node.label || "Canvas nicht gefunden";
+      node.label = title.textContent;
+      footer.textContent = canvas
+        ? `${canvas.nodes.length} Karten · ${canvas.edges.length} Verbindungen`
+        : "Referenz fehlt";
+      body.classList.add("syc-canvas-preview");
+      const summary = document.createElement("div");
+      summary.className = "syc-canvas-preview__summary";
+      const names = canvas?.nodes.slice(0, 6).map((item) => this.nodeDataName(item)).filter(Boolean) || [];
+      summary.innerHTML = `<strong>${canvas ? "Enthaltener Canvas" : "Canvas nicht verfügbar"}</strong><span>${escapeHtml(names.join(" · ") || "Noch keine Karten")}</span>`;
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "syc-button syc-button--primary syc-canvas-preview__open";
+      open.textContent = "Canvas öffnen";
+      open.disabled = !canvas || !node.canvasRefId;
+      open.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (node.canvasRefId) this.openCanvas(node.canvasRefId, title.textContent || node.canvasRefId);
+      });
+      body.append(summary, open);
+      card.addEventListener("dblclick", (event) => {
+        if ((event.target as HTMLElement).closest("input, textarea, button")) return;
+        event.stopPropagation();
+        if (node.canvasRefId && canvas) this.openCanvas(node.canvasRefId, title.textContent || node.canvasRefId);
+      });
+    } else if (node.type === "link") {
+      const url = node.url ? normalizedUrl(node.url) : undefined;
+      title.textContent = node.label || (url ? new URL(url).hostname : "Ungültiger Link");
+      footer.textContent = url || "Adresse fehlt";
+      body.classList.add("syc-media-card");
+      if (!url) {
+        body.textContent = "Diese Web-Adresse ist ungültig.";
+        body.classList.add("syc-card__error");
+      } else {
+        const kind = mediaType(url);
+        if (kind === "image") {
+          const image = document.createElement("img");
+          image.src = url;
+          image.alt = node.label || "Eingebettetes Bild";
+          image.loading = "lazy";
+          body.append(image);
+        } else if (kind === "video") {
+          const video = document.createElement("video");
+          video.src = url;
+          video.controls = true;
+          video.preload = "metadata";
+          body.append(video);
+        } else if (kind === "audio") {
+          const audio = document.createElement("audio");
+          audio.src = url;
+          audio.controls = true;
+          body.append(audio);
+        } else {
+          const frame = document.createElement("iframe");
+          frame.src = embeddedUrl(url);
+          frame.loading = "lazy";
+          frame.referrerPolicy = "no-referrer";
+          frame.title = node.label || "Web-Inhalt";
+          body.append(frame);
+        }
+        const open = document.createElement("a");
+        open.className = "syc-media-card__open";
+        open.href = url;
+        open.target = "_blank";
+        open.rel = "noreferrer";
+        open.textContent = "↗ Öffnen";
+        body.append(open);
+      }
     } else if (node.type === "text") {
       title.textContent = "Freie Textkarte";
       footer.textContent = "Nur im Canvas gespeichert";
@@ -1388,6 +1665,7 @@ class CanvasView {
       this.configureConnection(connection, edge);
       const color = edge?.color || "default";
       const stroke = COLOR_VALUES[color]
+        || (/^#[0-9a-f]{6}$/i.test(color) ? color : "")
         || getComputedStyle(this.element).getPropertyValue("--syc-accent").trim()
         || "#888";
       connection.setPaintStyle({
@@ -1429,7 +1707,7 @@ class CanvasView {
     const style = this.element.querySelector<HTMLSelectElement>("[data-role='edge-style']")!;
     source.innerHTML = "";
     target.innerHTML = "";
-    this.graph.nodes.filter((node) => node.type !== "group").forEach((node) => {
+    this.graph.nodes.forEach((node) => {
       const sourceOption = document.createElement("option");
       sourceOption.value = node.id;
       sourceOption.textContent = this.nodeDisplayName(node);
@@ -1497,6 +1775,13 @@ class CanvasView {
     card.style.top = `${node.y}px`;
     card.style.width = `${node.width}px`;
     card.style.height = `${node.height}px`;
+  }
+
+  private applyCardColor(card: HTMLElement, color: CardColor) {
+    const custom = /^#[0-9a-f]{6}$/i.test(color);
+    card.dataset.color = custom ? "custom" : color;
+    if (custom) card.style.setProperty("--syc-card-tint", color);
+    else card.style.removeProperty("--syc-card-tint");
   }
 
   private nextPosition(): Point {
@@ -1606,8 +1891,14 @@ class CanvasView {
   private nodeDisplayName(node: CanvasNode) {
     const visible = this.card(node.id)?.querySelector<HTMLElement>(".syc-card__title")?.textContent?.trim();
     if (visible) return visible;
+    return this.nodeDataName(node);
+  }
+
+  private nodeDataName(node: CanvasNode) {
     if (node.type === "shape" || node.type === "group") return node.label || "Unbenannt";
     if (node.type === "text") return (node.markdown || "Textkarte").slice(0, 48);
+    if (node.type === "canvas") return node.label || "Canvas";
+    if (node.type === "link") return node.label || node.url || "Web/Media";
     return node.type === "document" ? `Dokument ${node.docId || ""}` : `Block ${node.blockId || ""}`;
   }
 
@@ -1684,7 +1975,7 @@ export default class SiYuanCanvas extends Plugin {
           console.error("SiYuan Canvas: Tab-Element fehlt", { canvasId, type });
           return;
         }
-        new CanvasView(plugin.app, element, canvasId, plugin.store, canvasName).init().catch((error) => {
+        new CanvasView(plugin.app, element, canvasId, plugin.store, (id, name) => plugin.open(id, name), canvasName).init().catch((error) => {
           console.error("SiYuan Canvas konnte nicht initialisiert werden", error);
           element.innerHTML = `<div class="syc-error">Canvas konnte nicht geladen werden: ${String(error)}</div>`;
         });
